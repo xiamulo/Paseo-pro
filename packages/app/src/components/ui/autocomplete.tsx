@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
-  ScrollView,
+  ScrollView as RNScrollView,
   Text,
   View,
   Pressable,
@@ -9,10 +9,14 @@ import {
   type NativeSyntheticEvent,
   type PressableStateCallbackType,
 } from "react-native";
+import { ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { File, Folder } from "lucide-react-native";
+import { isWeb } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { getAutocompleteScrollOffset } from "./autocomplete-utils";
+
+const ScrollView = isWeb ? RNScrollView : GHScrollView;
 
 export interface AutocompleteOption {
   id: string;
@@ -127,19 +131,25 @@ export function Autocomplete({
   maxHeight = 220,
 }: AutocompleteProps) {
   const { theme } = useUnistyles();
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<RNScrollView>(null);
   const rowLayoutsRef = useRef<Map<number, { top: number; height: number }>>(new Map());
   const viewportHeightRef = useRef(0);
   const scrollOffsetRef = useRef(0);
+  const shouldEnsureActiveItemVisibleRef = useRef(true);
+  const optionsLayoutKey = useMemo(() => options.map((option) => option.id).join("\0"), [options]);
 
   const ensureActiveItemVisible = useCallback(() => {
     if (selectedIndex < 0) {
-      return;
+      return true;
     }
 
     const layout = rowLayoutsRef.current.get(selectedIndex);
     if (!layout) {
-      return;
+      return false;
+    }
+
+    if (viewportHeightRef.current <= 0) {
+      return false;
     }
 
     const nextOffset = getAutocompleteScrollOffset({
@@ -150,43 +160,38 @@ export function Autocomplete({
     });
 
     if (Math.abs(nextOffset - scrollOffsetRef.current) < 1) {
-      return;
+      return true;
     }
 
     scrollOffsetRef.current = nextOffset;
     scrollRef.current?.scrollTo({ y: nextOffset, animated: false });
+    return true;
   }, [selectedIndex]);
-
-  const pinToBottom = useCallback(() => {
-    scrollRef.current?.scrollToEnd({ animated: false });
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollToEnd({ animated: false });
-    });
-  }, []);
 
   useEffect(() => {
     rowLayoutsRef.current.clear();
     scrollOffsetRef.current = 0;
-  }, [options]);
+    shouldEnsureActiveItemVisibleRef.current = true;
+  }, [optionsLayoutKey]);
 
   useEffect(() => {
-    if (options.length === 0) {
-      return;
-    }
-    pinToBottom();
-  }, [options, pinToBottom]);
-
-  useEffect(() => {
-    const raf = requestAnimationFrame(ensureActiveItemVisible);
+    shouldEnsureActiveItemVisibleRef.current = true;
+    const raf = requestAnimationFrame(() => {
+      if (ensureActiveItemVisible()) {
+        shouldEnsureActiveItemVisibleRef.current = false;
+      }
+    });
     return () => {
       cancelAnimationFrame(raf);
     };
-  }, [ensureActiveItemVisible, options.length]);
+  }, [ensureActiveItemVisible, optionsLayoutKey]);
 
   const handleScrollViewLayout = useCallback(
     (event: LayoutChangeEvent) => {
       viewportHeightRef.current = event.nativeEvent.layout.height;
-      ensureActiveItemVisible();
+      if (shouldEnsureActiveItemVisibleRef.current && ensureActiveItemVisible()) {
+        shouldEnsureActiveItemVisibleRef.current = false;
+      }
     },
     [ensureActiveItemVisible],
   );
@@ -201,7 +206,9 @@ export function Autocomplete({
         top: event.nativeEvent.layout.y,
         height: event.nativeEvent.layout.height,
       });
-      ensureActiveItemVisible();
+      if (shouldEnsureActiveItemVisibleRef.current && ensureActiveItemVisible()) {
+        shouldEnsureActiveItemVisibleRef.current = false;
+      }
     },
     [ensureActiveItemVisible],
   );
@@ -259,9 +266,9 @@ export function Autocomplete({
         <ScrollView
           ref={scrollRef}
           onLayout={handleScrollViewLayout}
-          onContentSizeChange={pinToBottom}
           onScroll={handleScroll}
           scrollEventThrottle={16}
+          nestedScrollEnabled
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="always"

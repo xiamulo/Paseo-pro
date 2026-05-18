@@ -390,10 +390,13 @@ const LongPressCopyMenu = memo(function LongPressCopyMenu({
     return <View style={longPressCopyMenuStylesheet.trigger}>{children}</View>;
   }
 
+  if (!isWeb) {
+    return <View style={longPressCopyMenuStylesheet.trigger}>{children}</View>;
+  }
+
   return (
     <ContextMenu>
       <ContextMenuTrigger
-        enabledOnMobile
         enabledOnWeb
         style={longPressCopyMenuStylesheet.trigger}
         accessibilityLabel="Message actions"

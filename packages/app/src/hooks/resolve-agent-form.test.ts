@@ -369,6 +369,32 @@ describe("resolveFormState", () => {
     expect(resolved.thinkingOptionId).toBe("xhigh");
   });
 
+  it("restores the previously selected provider configuration from preferences", () => {
+    const resolved = resolveFormState(
+      undefined,
+      {
+        provider: "codex",
+        providerPreferences: {
+          codex: {
+            model: "gpt-5.3-codex",
+            mode: "full-access",
+            thinkingByModel: { "gpt-5.3-codex": "low" },
+          },
+        },
+      },
+      CODEX_MODELS,
+      INITIAL_USER_MODIFIED,
+      makeState().form,
+
+      codexProviderMap,
+    );
+
+    expect(resolved.provider).toBe("codex");
+    expect(resolved.modeId).toBe("full-access");
+    expect(resolved.model).toBe("gpt-5.3-codex");
+    expect(resolved.thinkingOptionId).toBe("low");
+  });
+
   it("falls back to model default when saved thinking preference is invalid", () => {
     const resolved = resolveFormState(
       undefined,

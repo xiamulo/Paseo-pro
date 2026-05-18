@@ -1,6 +1,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -22,6 +23,7 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import {
   Brain,
   ChevronDown,
+  ChevronLeft,
   ListTodo,
   Settings2,
   ShieldAlert,
@@ -457,6 +459,92 @@ function SheetModelTriggerView({
   );
 }
 
+function SheetProviderRow({
+  option,
+  selected,
+  onSelect,
+}: {
+  option: StatusOption;
+  selected: boolean;
+  onSelect: (providerId: string) => void;
+}) {
+  const { theme } = useUnistyles();
+  const ProviderIcon = getProviderIcon(option.id);
+  const handlePress = useCallback(() => {
+    onSelect(option.id);
+  }, [onSelect, option.id]);
+  const accessibilityState = useMemo(() => ({ selected }), [selected]);
+  const rowStyle = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.sheetSelect,
+      selected && styles.sheetSelectSelected,
+      pressed && styles.sheetSelectPressed,
+    ],
+    [selected],
+  );
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      style={rowStyle}
+      accessibilityRole="button"
+      accessibilityState={accessibilityState}
+      accessibilityLabel={`Select ${option.label}`}
+    >
+      <ProviderIcon size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
+      <Text style={styles.sheetSelectText}>{option.label}</Text>
+      {selected ? <Text style={styles.modeBadgeText}>Selected</Text> : null}
+    </Pressable>
+  );
+}
+
+function SheetProviderList({
+  options,
+  selectedProviderId,
+  onSelectProvider,
+}: {
+  options: StatusOption[];
+  selectedProviderId: string | undefined;
+  onSelectProvider: (providerId: string) => void;
+}) {
+  return (
+    <View style={styles.sheetSection}>
+      {options.map((option) => (
+        <SheetProviderRow
+          key={option.id}
+          option={option}
+          selected={option.id === selectedProviderId}
+          onSelect={onSelectProvider}
+        />
+      ))}
+    </View>
+  );
+}
+
+function SheetProviderBackRow({ label, onPress }: { label: string; onPress: () => void }) {
+  const { theme } = useUnistyles();
+  const rowStyle = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.sheetProviderBackRow,
+      pressed && styles.sheetSelectPressed,
+    ],
+    [],
+  );
+  return (
+    <View style={styles.sheetSection}>
+      <Pressable
+        onPress={onPress}
+        style={rowStyle}
+        accessibilityRole="button"
+        accessibilityLabel="Choose agent"
+      >
+        <ChevronLeft size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
+        <Text style={styles.sheetProviderBackText}>{label}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function getModeIconColor(
   colorTier: AgentModeColorTier | undefined,
   palette: {
@@ -774,6 +862,8 @@ function ControlledStatusBar({
       ) : (
         <SheetStatusBarContent
           provider={provider}
+          providerOptions={providerOptions}
+          selectedProviderId={selectedProviderId}
           modeOptions={modeOptions}
           selectedModeId={selectedModeId}
           selectedModelId={selectedModelId}
@@ -781,6 +871,7 @@ function ControlledStatusBar({
           selectedThinkingOptionId={selectedThinkingOptionId}
           features={features}
           onSetFeature={onSetFeature}
+          onSelectProvider={onSelectProvider}
           onSelectMode={onSelectMode}
           onSelectThinkingOption={onSelectThinkingOption}
           onToggleFavoriteModel={onToggleFavoriteModel}
@@ -790,6 +881,7 @@ function ControlledStatusBar({
           favoriteKeys={favoriteKeys}
           disabled={disabled}
           isModelLoading={isModelLoading}
+          canSelectProvider={canSelectProvider}
           canSelectMode={canSelectMode}
           canSelectModel={canSelectModel}
           canSelectThinking={canSelectThinking}
@@ -797,6 +889,7 @@ function ControlledStatusBar({
           modelDisabled={modelDisabled}
           effectiveProviderDefinitions={effectiveProviderDefinitions}
           effectiveAllProviderModels={effectiveAllProviderModels}
+          displayProvider={displayProvider}
           displayMode={displayMode}
           displayModel={displayModel}
           displayThinking={displayThinking}
@@ -1092,6 +1185,8 @@ function DesktopStatusBarContent(props: DesktopStatusBarContentProps) {
 
 interface SheetStatusBarContentProps {
   provider: string;
+  providerOptions?: StatusOption[];
+  selectedProviderId?: string;
   modeOptions?: StatusOption[];
   selectedModeId?: string;
   selectedModelId?: string;
@@ -1099,6 +1194,7 @@ interface SheetStatusBarContentProps {
   selectedThinkingOptionId?: string;
   features?: AgentFeature[];
   onSetFeature?: (featureId: string, value: unknown) => void;
+  onSelectProvider?: (providerId: string) => void;
   onSelectMode?: (modeId: string) => void;
   onSelectThinkingOption?: (thinkingOptionId: string) => void;
   onToggleFavoriteModel?: (provider: string, modelId: string) => void;
@@ -1108,6 +1204,7 @@ interface SheetStatusBarContentProps {
   favoriteKeys: Set<string>;
   disabled: boolean;
   isModelLoading: boolean;
+  canSelectProvider: boolean;
   canSelectMode: boolean;
   canSelectModel: boolean;
   canSelectThinking: boolean;
@@ -1115,6 +1212,7 @@ interface SheetStatusBarContentProps {
   modelDisabled: boolean;
   effectiveProviderDefinitions: AgentProviderDefinition[];
   effectiveAllProviderModels: Map<string, AgentModelDefinition[]>;
+  displayProvider: string;
   displayMode: string;
   displayModel: string;
   displayThinking: string;
@@ -1139,6 +1237,8 @@ function SheetStatusBarContent(props: SheetStatusBarContentProps) {
   const { theme } = useUnistyles();
   const {
     provider,
+    providerOptions,
+    selectedProviderId,
     modeOptions,
     selectedModeId,
     selectedModelId,
@@ -1146,6 +1246,7 @@ function SheetStatusBarContent(props: SheetStatusBarContentProps) {
     selectedThinkingOptionId,
     features,
     onSetFeature,
+    onSelectProvider,
     onSelectMode,
     onSelectThinkingOption,
     onToggleFavoriteModel,
@@ -1155,6 +1256,7 @@ function SheetStatusBarContent(props: SheetStatusBarContentProps) {
     favoriteKeys,
     disabled,
     isModelLoading,
+    canSelectProvider,
     canSelectMode,
     canSelectModel,
     canSelectThinking,
@@ -1162,6 +1264,7 @@ function SheetStatusBarContent(props: SheetStatusBarContentProps) {
     modelDisabled,
     effectiveProviderDefinitions,
     effectiveAllProviderModels,
+    displayProvider,
     displayMode,
     displayModel,
     displayThinking,
@@ -1181,6 +1284,29 @@ function SheetStatusBarContent(props: SheetStatusBarContentProps) {
     handleOpenChange,
     renderSheetModelTrigger,
   } = props;
+  const hasProviderList = Boolean(providerOptions?.length && onSelectProvider);
+  const [showProviderList, setShowProviderList] = useState(false);
+
+  useEffect(() => {
+    setShowProviderList(prefsOpen && hasProviderList && !selectedProviderId);
+  }, [hasProviderList, prefsOpen, selectedProviderId]);
+
+  const handleSheetProviderSelect = useCallback(
+    (providerId: string) => {
+      onSelectProvider?.(providerId);
+      setShowProviderList(false);
+    },
+    [onSelectProvider],
+  );
+
+  const handleShowProviderList = useCallback(() => {
+    setShowProviderList(true);
+  }, []);
+
+  const canSelectCurrentProviderInModelMenu = useCallback(
+    (providerId: string) => providerId === provider && canSelectProviderInModelMenu(providerId),
+    [canSelectProviderInModelMenu, provider],
+  );
 
   return (
     <>
@@ -1205,99 +1331,112 @@ function SheetStatusBarContent(props: SheetStatusBarContentProps) {
         onClose={handleClosePrefs}
         testID="agent-preferences-sheet"
       >
-        {canSelectModel ? (
-          <View style={styles.sheetSection}>
-            <CombinedModelSelector
-              providerDefinitions={effectiveProviderDefinitions}
-              allProviderModels={effectiveAllProviderModels}
-              selectedProvider={provider}
-              selectedModel={selectedModelId ?? ""}
-              canSelectProvider={canSelectProviderInModelMenu}
-              onSelect={handleSheetModelSelect}
-              favoriteKeys={favoriteKeys}
-              onToggleFavorite={onToggleFavoriteModel}
-              isLoading={isModelLoading}
-              disabled={modelDisabled}
-              onOpen={onModelSelectorOpen}
-              onClose={onDropdownClose}
-              renderTrigger={renderSheetModelTrigger}
-            />
-          </View>
-        ) : null}
-
-        {thinkingOptions && thinkingOptions.length > 0 ? (
-          <View style={styles.sheetSection}>
-            <DropdownMenu
-              open={openSelector === "thinking"}
-              onOpenChange={handleThinkingOpenChange}
-            >
-              <DropdownMenuTrigger
-                disabled={disabled || !canSelectThinking}
-                style={sheetThinkingPressableStyle}
-                accessibilityRole="button"
-                accessibilityLabel="Select thinking option"
-                testID="agent-preferences-thinking"
-              >
-                <Brain size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
-                <Text style={styles.sheetSelectText}>{displayThinking}</Text>
-                <ChevronDown size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start">
-                {thinkingOptions.map((thinking) => (
-                  <ThinkingMenuItem
-                    key={thinking.id}
-                    thinking={thinking}
-                    selected={thinking.id === selectedThinkingOptionId}
-                    onSelectThinkingOption={onSelectThinkingOption}
-                  />
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </View>
-        ) : null}
-
-        {modeOptions && modeOptions.length > 0 ? (
-          <View style={styles.sheetSection}>
-            <DropdownMenu open={openSelector === "mode"} onOpenChange={handleModeOpenChange}>
-              <DropdownMenuTrigger
-                disabled={disabled || !canSelectMode}
-                style={sheetModePressableStyle}
-                accessibilityRole="button"
-                accessibilityLabel="Select agent mode"
-                testID="agent-preferences-mode"
-              >
-                {ModeIconComponent ? (
-                  <ModeIconComponent size={theme.iconSize.md} color={modeIconColor} />
-                ) : null}
-                <Text style={styles.sheetSelectText}>{displayMode}</Text>
-                <ChevronDown size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent side="top" align="start">
-                {modeOptions.map((mode) => (
-                  <ModeMenuItem
-                    key={mode.id}
-                    mode={mode}
-                    provider={provider}
-                    providerDefinitions={providerDefinitions}
-                    selected={mode.id === selectedModeId}
-                    onSelectMode={onSelectMode}
-                  />
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </View>
-        ) : null}
-
-        {features?.map((feature) => (
-          <SheetFeatureItem
-            key={`feature-${feature.id}`}
-            feature={feature}
-            disabled={disabled}
-            openSelector={openSelector}
-            handleOpenChange={handleOpenChange}
-            onSetFeature={onSetFeature}
+        {showProviderList && providerOptions ? (
+          <SheetProviderList
+            options={providerOptions}
+            selectedProviderId={selectedProviderId}
+            onSelectProvider={handleSheetProviderSelect}
           />
-        ))}
+        ) : (
+          <>
+            {hasProviderList && canSelectProvider ? (
+              <SheetProviderBackRow label={displayProvider} onPress={handleShowProviderList} />
+            ) : null}
+            {canSelectModel ? (
+              <View style={styles.sheetSection}>
+                <CombinedModelSelector
+                  providerDefinitions={effectiveProviderDefinitions}
+                  allProviderModels={effectiveAllProviderModels}
+                  selectedProvider={provider}
+                  selectedModel={selectedModelId ?? ""}
+                  canSelectProvider={canSelectCurrentProviderInModelMenu}
+                  onSelect={handleSheetModelSelect}
+                  favoriteKeys={favoriteKeys}
+                  onToggleFavorite={onToggleFavoriteModel}
+                  isLoading={isModelLoading}
+                  disabled={modelDisabled}
+                  onOpen={onModelSelectorOpen}
+                  onClose={onDropdownClose}
+                  renderTrigger={renderSheetModelTrigger}
+                />
+              </View>
+            ) : null}
+
+            {thinkingOptions && thinkingOptions.length > 0 ? (
+              <View style={styles.sheetSection}>
+                <DropdownMenu
+                  open={openSelector === "thinking"}
+                  onOpenChange={handleThinkingOpenChange}
+                >
+                  <DropdownMenuTrigger
+                    disabled={disabled || !canSelectThinking}
+                    style={sheetThinkingPressableStyle}
+                    accessibilityRole="button"
+                    accessibilityLabel="Select thinking option"
+                    testID="agent-preferences-thinking"
+                  >
+                    <Brain size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
+                    <Text style={styles.sheetSelectText}>{displayThinking}</Text>
+                    <ChevronDown size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent side="top" align="start">
+                    {thinkingOptions.map((thinking) => (
+                      <ThinkingMenuItem
+                        key={thinking.id}
+                        thinking={thinking}
+                        selected={thinking.id === selectedThinkingOptionId}
+                        onSelectThinkingOption={onSelectThinkingOption}
+                      />
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </View>
+            ) : null}
+
+            {modeOptions && modeOptions.length > 0 ? (
+              <View style={styles.sheetSection}>
+                <DropdownMenu open={openSelector === "mode"} onOpenChange={handleModeOpenChange}>
+                  <DropdownMenuTrigger
+                    disabled={disabled || !canSelectMode}
+                    style={sheetModePressableStyle}
+                    accessibilityRole="button"
+                    accessibilityLabel="Select agent mode"
+                    testID="agent-preferences-mode"
+                  >
+                    {ModeIconComponent ? (
+                      <ModeIconComponent size={theme.iconSize.md} color={modeIconColor} />
+                    ) : null}
+                    <Text style={styles.sheetSelectText}>{displayMode}</Text>
+                    <ChevronDown size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent side="top" align="start">
+                    {modeOptions.map((mode) => (
+                      <ModeMenuItem
+                        key={mode.id}
+                        mode={mode}
+                        provider={provider}
+                        providerDefinitions={providerDefinitions}
+                        selected={mode.id === selectedModeId}
+                        onSelectMode={onSelectMode}
+                      />
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </View>
+            ) : null}
+
+            {features?.map((feature) => (
+              <SheetFeatureItem
+                key={`feature-${feature.id}`}
+                feature={feature}
+                disabled={disabled}
+                openSelector={openSelector}
+                handleOpenChange={handleOpenChange}
+                onSetFeature={onSetFeature}
+              />
+            ))}
+          </>
+        )}
       </AdaptiveModalSheet>
     </>
   );
@@ -1863,7 +2002,7 @@ export const AgentStatusBar = memo(function AgentStatusBar({
 export function DraftAgentStatusBar({
   providerDefinitions,
   selectedProvider,
-  onSelectProvider: _onSelectProvider,
+  onSelectProvider,
   modeOptions,
   selectedMode,
   onSelectMode,
@@ -1898,6 +2037,10 @@ export function DraftAgentStatusBar({
   const mappedThinkingOptions = useMemo<StatusOption[]>(() => {
     return thinkingOptions.map((option) => ({ id: option.id, label: option.label }));
   }, [thinkingOptions]);
+  const providerOptions = useMemo<StatusOption[]>(
+    () => providerDefinitions.map((definition) => ({ id: definition.id, label: definition.label })),
+    [providerDefinitions],
+  );
   const favoriteKeys = useMemo(
     () =>
       new Set(
@@ -1929,6 +2072,16 @@ export function DraftAgentStatusBar({
       });
     },
     [updatePreferences],
+  );
+  const handleSelectProvider = useCallback(
+    (providerId: string) => {
+      const definition = providerDefinitions.find((item) => item.id === providerId);
+      if (!definition) {
+        return;
+      }
+      onSelectProvider(definition.id);
+    },
+    [onSelectProvider, providerDefinitions],
   );
 
   if (platformIsWeb) {
@@ -1970,6 +2123,9 @@ export function DraftAgentStatusBar({
   return (
     <ControlledStatusBar
       provider={selectedProvider ?? ""}
+      providerOptions={providerOptions}
+      selectedProviderId={selectedProvider ?? undefined}
+      onSelectProvider={handleSelectProvider}
       providerDefinitions={providerDefinitions}
       allProviderModels={allProviderModels}
       modeOptions={hasSelectedProvider ? mappedModeOptions : undefined}
@@ -2071,6 +2227,25 @@ const styles = StyleSheet.create((theme) => ({
   },
   sheetSelectPressed: {
     backgroundColor: theme.colors.surface2,
+  },
+  sheetSelectSelected: {
+    borderColor: theme.colors.borderAccent,
+    backgroundColor: theme.colors.surface2,
+  },
+  sheetProviderBackRow: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: theme.spacing[1],
+    paddingHorizontal: theme.spacing[2],
+    paddingVertical: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
+  },
+  sheetProviderBackText: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
   },
   disabledSheetSelect: {
     opacity: 0.5,
