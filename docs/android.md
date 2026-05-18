@@ -71,7 +71,7 @@ adb exec-out screencap -p > screenshot.png
 Stable tag pushes like `v0.1.0` trigger:
 
 - `packages/app/.eas/workflows/release-mobile.yml` on Expo servers (iOS + Android build + submit)
-- `.github/workflows/android-apk-release.yml` on GitHub Actions (APK asset on GitHub Release)
+- `.github/workflows/android-apk-release.yml` on GitHub Actions (local Gradle APK asset on GitHub Release; does not require `EXPO_TOKEN`)
 
 Beta tags like `v0.1.1-beta.1` only trigger the GitHub APK workflow. They publish a GitHub prerelease APK for testing and do not submit to the stores.
 
