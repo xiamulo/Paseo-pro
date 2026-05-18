@@ -91,6 +91,13 @@ import { PlanCard } from "./plan-card";
 import { useToolCallSheet } from "./tool-call-sheet";
 import { ToolCallDetailsContent } from "./tool-call-details";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { useToast } from "@/contexts/toast-context";
+import {
   AssistantInlineCodePathLink,
   classifyAssistantFileLink,
   type AssistantFileLinkSource,
@@ -167,6 +174,7 @@ const markdownStyleMapping = (theme: Theme): Partial<MarkdownWithStableRendererP
 });
 
 const ThemedMicVocal = withUnistyles(MicVocal);
+const ThemedCopy = withUnistyles(Copy);
 const ThemedTodoCheckIcon = withUnistyles(Check);
 const ThemedFileSymlinkIcon = withUnistyles(FileSymlink);
 const ThemedTriangleAlertIcon = withUnistyles(TriangleAlertIcon);
@@ -325,6 +333,85 @@ function shouldStopDetailWheelPropagation(detailRoot: HTMLElement, event: WheelE
   }
   return canScrollHorizontally;
 }
+
+function isCopyableText(text: string): boolean {
+  return text.trim().length > 0;
+}
+
+function useCopyToClipboard(): (text: string, label?: string) => void {
+  const toast = useToast();
+  return useCallback(
+    (text: string, label?: string) => {
+      if (!isCopyableText(text)) {
+        return;
+      }
+      void Clipboard.setStringAsync(text).then(
+        () => toast.copied(label),
+        () => toast.error("Couldn't copy to clipboard"),
+      );
+    },
+    [toast],
+  );
+}
+
+interface LongPressCopyMenuProps {
+  getContent: () => string;
+  enabled?: boolean;
+  copyLabel?: string;
+  testID?: string;
+  children: ReactNode;
+}
+
+const longPressCopyMenuStylesheet = StyleSheet.create({
+  trigger: {
+    minWidth: 0,
+    flexShrink: 1,
+    ...(isWeb ? { userSelect: "text" as const } : {}),
+  },
+});
+
+const LongPressCopyMenuItemIcon = <ThemedCopy size={16} uniProps={foregroundMutedColorMapping} />;
+
+const LongPressCopyMenu = memo(function LongPressCopyMenu({
+  getContent,
+  enabled = true,
+  copyLabel,
+  testID,
+  children,
+}: LongPressCopyMenuProps) {
+  const content = getContent();
+  const isEnabled = enabled && isCopyableText(content);
+  const copyToClipboard = useCopyToClipboard();
+  const handleCopy = useCallback(() => {
+    copyToClipboard(getContent(), copyLabel);
+  }, [copyToClipboard, copyLabel, getContent]);
+
+  if (!isEnabled) {
+    return <View style={longPressCopyMenuStylesheet.trigger}>{children}</View>;
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger
+        enabledOnMobile
+        enabledOnWeb
+        style={longPressCopyMenuStylesheet.trigger}
+        accessibilityLabel="Message actions"
+      >
+        {children}
+      </ContextMenuTrigger>
+      <ContextMenuContent align="start" width={180} mobileMode="dropdown" testID={testID}>
+        <ContextMenuItem
+          testID={testID ? `${testID}-copy` : undefined}
+          onSelect={handleCopy}
+          leading={LongPressCopyMenuItemIcon}
+        >
+          Copy
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+});
 
 const userMessageStylesheet = StyleSheet.create((theme) => ({
   container: {
@@ -518,36 +605,43 @@ export const UserMessage = memo(function UserMessage({
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <View style={userMessageStylesheet.bubble}>
-          {hasImages ? (
-            <View style={imagePreviewContainerStyle}>
-              {images.map((image) => (
-                <View key={image.id} style={userMessageStylesheet.imagePill}>
-                  <UserMessageAttachmentThumbnail image={image} />
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {hasAttachments ? (
-            <View style={attachmentPreviewContainerStyle}>
-              {attachments.map((attachment, index) => (
-                <View
-                  key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
-                  style={userMessageStylesheet.structuredAttachmentPill}
-                >
-                  <Text style={userMessageStylesheet.structuredAttachmentText} numberOfLines={1}>
-                    {getUserMessageAttachmentLabel(attachment)}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {hasText ? (
-            <Text selectable style={userMessageStylesheet.text}>
-              {message}
-            </Text>
-          ) : null}
-        </View>
+        <LongPressCopyMenu
+          getContent={getMessageContent}
+          enabled={hasText}
+          copyLabel="message"
+          testID="user-message-copy-menu"
+        >
+          <View style={userMessageStylesheet.bubble}>
+            {hasImages ? (
+              <View style={imagePreviewContainerStyle}>
+                {images.map((image) => (
+                  <View key={image.id} style={userMessageStylesheet.imagePill}>
+                    <UserMessageAttachmentThumbnail image={image} />
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {hasAttachments ? (
+              <View style={attachmentPreviewContainerStyle}>
+                {attachments.map((attachment, index) => (
+                  <View
+                    key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
+                    style={userMessageStylesheet.structuredAttachmentPill}
+                  >
+                    <Text style={userMessageStylesheet.structuredAttachmentText} numberOfLines={1}>
+                      {getUserMessageAttachmentLabel(attachment)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {hasText ? (
+              <Text selectable style={userMessageStylesheet.text}>
+                {message}
+              </Text>
+            ) : null}
+          </View>
+        </LongPressCopyMenu>
         {hasText ? (
           <View style={trailingRowStyle} pointerEvents={showTrailingRow ? "auto" : "none"}>
             <Text style={userMessageStylesheet.timestampText}>{formattedTimestamp}</Text>
@@ -1497,7 +1591,11 @@ function MarkdownInheritedText({
     () => [inheritedStyles, textStyle, overrideStyle],
     [inheritedStyles, textStyle, overrideStyle],
   );
-  return <Text style={style}>{children}</Text>;
+  return (
+    <Text selectable style={style}>
+      {children}
+    </Text>
+  );
 }
 
 interface MarkdownListItemContentProps {
@@ -1778,7 +1876,9 @@ export const AssistantMessage = memo(function AssistantMessage({
 
         return (
           <View key={node.key} style={styles.list_item}>
-            <Text style={iconStyle}>{marker}</Text>
+            <Text selectable style={iconStyle}>
+              {marker}
+            </Text>
             <MarkdownListItemContent contentStyle={contentStyle}>
               {children}
             </MarkdownListItemContent>
@@ -1868,22 +1968,32 @@ export const AssistantMessage = memo(function AssistantMessage({
     [spacing],
   );
 
+  const getAssistantContent = useCallback(() => message, [message]);
+  const hasAssistantContent = isCopyableText(message);
+
   return (
     <View testID="assistant-message" style={assistantContainerStyle}>
-      {keyedBlocks.map(({ key, block }, index) => (
-        <AssistantMessageBlockContainer
-          key={key}
-          block={block}
-          marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
-        >
-          <MemoizedMarkdownBlock
-            text={block}
-            rules={markdownRules}
-            parser={markdownParser}
-            onLinkPress={handleMarkdownLinkPress}
-          />
-        </AssistantMessageBlockContainer>
-      ))}
+      <LongPressCopyMenu
+        getContent={getAssistantContent}
+        enabled={hasAssistantContent}
+        copyLabel="message"
+        testID="assistant-message-copy-menu"
+      >
+        {keyedBlocks.map(({ key, block }, index) => (
+          <AssistantMessageBlockContainer
+            key={key}
+            block={block}
+            marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
+          >
+            <MemoizedMarkdownBlock
+              text={block}
+              rules={markdownRules}
+              parser={markdownParser}
+              onLinkPress={handleMarkdownLinkPress}
+            />
+          </AssistantMessageBlockContainer>
+        ))}
+      </LongPressCopyMenu>
     </View>
   );
 });
@@ -1935,13 +2045,25 @@ export const SpeakMessage = memo(function SpeakMessage({
     [resolvedDisableOuterSpacing],
   );
 
+  const getSpeakContent = useCallback(() => message, [message]);
+  const hasSpeakContent = isCopyableText(message);
+
   return (
     <View testID="speak-message" style={containerStyle}>
       <View style={speakMessageStylesheet.header}>
         <ThemedMicVocal size={12} uniProps={foregroundMutedColorMapping} />
         <Text style={speakMessageStylesheet.headerLabel}>Spoke</Text>
       </View>
-      <Text style={speakMessageStylesheet.text}>{message}</Text>
+      <LongPressCopyMenu
+        getContent={getSpeakContent}
+        enabled={hasSpeakContent}
+        copyLabel="message"
+        testID="speak-message-copy-menu"
+      >
+        <Text selectable style={speakMessageStylesheet.text}>
+          {message}
+        </Text>
+      </LongPressCopyMenu>
     </View>
   );
 });

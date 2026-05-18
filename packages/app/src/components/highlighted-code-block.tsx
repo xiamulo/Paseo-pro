@@ -119,7 +119,7 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
       onPointerLeave={handlePointerLeave}
     >
       {keyedLines ? (
-        <Text style={innerTextStyle}>
+        <Text selectable style={innerTextStyle}>
           {keyedLines.map((line, lineIndex) => (
             <React.Fragment key={line.key}>
               {lineIndex > 0 ? "\n" : null}
@@ -130,7 +130,9 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
           ))}
         </Text>
       ) : (
-        <Text style={innerTextStyle}>{code}</Text>
+        <Text selectable style={innerTextStyle}>
+          {code}
+        </Text>
       )}
       <CopyButton getCode={getCode} visible={controlsVisible} />
     </View>
