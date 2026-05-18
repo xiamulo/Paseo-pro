@@ -6,6 +6,9 @@ polyfillCrypto();
 import { polyfillScreenOrientation } from "./src/polyfills/screen-orientation";
 polyfillScreenOrientation();
 
+import { registerBackgroundKeepaliveService } from "./src/native/background-keepalive-service";
+registerBackgroundKeepaliveService();
+
 // Configure Unistyles before Expo Router pulls in any components using StyleSheet.
 import "./src/styles/unistyles";
 import "expo-router/entry";

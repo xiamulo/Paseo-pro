@@ -1,7 +1,53 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { withAndroidManifest } = require("expo/config-plugins");
 const pkg = require("./package.json");
 const appVariant = process.env.APP_VARIANT ?? "production";
+
+const NOTIFEE_FOREGROUND_SERVICE_NAME = "app.notifee.core.ForegroundService";
+const PASEO_FOREGROUND_SERVICE_TYPE = "remoteMessaging";
+
+function withNotifeeForegroundServiceType(config) {
+  return withAndroidManifest(config, (modConfig) => {
+    const manifest = modConfig.modResults.manifest;
+    manifest.$ = manifest.$ ?? {};
+    manifest.$["xmlns:tools"] = manifest.$["xmlns:tools"] ?? "http://schemas.android.com/tools";
+
+    const application = manifest.application?.[0];
+    if (!application) {
+      return modConfig;
+    }
+
+    const services = application.service ?? [];
+    let service = services.find(
+      (entry) => entry.$?.["android:name"] === NOTIFEE_FOREGROUND_SERVICE_NAME,
+    );
+    if (!service) {
+      service = {
+        $: {
+          "android:name": NOTIFEE_FOREGROUND_SERVICE_NAME,
+          "android:exported": "false",
+        },
+      };
+      services.push(service);
+      application.service = services;
+    }
+
+    service.$ = service.$ ?? {};
+    service.$["android:foregroundServiceType"] = PASEO_FOREGROUND_SERVICE_TYPE;
+    service.$["tools:node"] = "merge";
+    const replaceAttrs = new Set(
+      String(service.$["tools:replace"] ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    );
+    replaceAttrs.add("android:foregroundServiceType");
+    service.$["tools:replace"] = Array.from(replaceAttrs).join(",");
+
+    return modConfig;
+  });
+}
 
 function resolveSecretFile(params) {
   const fromEnv = process.env[params.envKey];
@@ -89,6 +135,10 @@ export default {
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "CAMERA",
         "android.permission.CAMERA",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING",
+        "android.permission.WAKE_LOCK",
       ],
       package: variant.packageId,
       ...(variant.googleServicesFile ? { googleServicesFile: variant.googleServicesFile } : {}),
@@ -139,6 +189,7 @@ export default {
           },
         },
       ],
+      withNotifeeForegroundServiceType,
     ],
     experiments: {
       typedRoutes: true,

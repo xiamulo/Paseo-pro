@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalSto
 import type { ComponentType, ReactNode } from "react";
 import {
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -57,6 +58,7 @@ import { PairLinkModal } from "@/components/pair-link-modal";
 import { KeyboardShortcutsSection } from "@/screens/settings/keyboard-shortcuts-section";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -74,6 +76,7 @@ import { settingsStyles } from "@/styles/settings";
 import { THINKING_TONE_NATIVE_PCM_BASE64 } from "@/utils/thinking-tone.native-pcm";
 import { useVoiceAudioEngineOptional } from "@/contexts/voice-context";
 import { HostPage, HostRenameButton } from "@/screens/settings/host-page";
+import { AgentSection } from "@/screens/settings/agent-section";
 import ProjectsScreen from "@/screens/projects-screen";
 import ProjectSettingsScreen from "@/screens/project-settings-screen";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -212,6 +215,7 @@ interface GeneralSectionProps {
   handleSendBehaviorChange: (behavior: SendBehavior) => void;
   handleServiceUrlBehaviorChange: (behavior: ServiceUrlBehavior) => void;
   handleTerminalScrollbackLinesChange: (lines: number) => void;
+  handleAndroidBackgroundKeepaliveChange: (enabled: boolean) => void;
 }
 
 interface ThemeMenuItemProps {
@@ -271,6 +275,7 @@ function GeneralSection({
   handleSendBehaviorChange,
   handleServiceUrlBehaviorChange,
   handleTerminalScrollbackLinesChange,
+  handleAndroidBackgroundKeepaliveChange,
 }: GeneralSectionProps) {
   const { theme } = useUnistyles();
   const iconSize = theme.iconSize.md;
@@ -395,6 +400,22 @@ function GeneralSection({
             accessibilityLabel="Terminal scrollback lines"
           />
         </View>
+        {Platform.OS === "android" ? (
+          <View style={ROW_WITH_BORDER_STYLE}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>Keep streaming in background</Text>
+              <Text style={settingsStyles.rowHint}>
+                Show a persistent notification so Paseo can keep receiving agent output when you
+                switch apps
+              </Text>
+            </View>
+            <Switch
+              value={settings.androidBackgroundKeepalive}
+              onValueChange={handleAndroidBackgroundKeepaliveChange}
+              accessibilityLabel="Keep streaming in background"
+            />
+          </View>
+        ) : null}
       </View>
     </SettingsSection>
   );
@@ -902,6 +923,13 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
     [updateSettings],
   );
 
+  const handleAndroidBackgroundKeepaliveChange = useCallback(
+    (androidBackgroundKeepalive: boolean) => {
+      void updateSettings({ androidBackgroundKeepalive });
+    },
+    [updateSettings],
+  );
+
   const handlePlaybackTest = useCallback(async () => {
     if (!voiceAudioEngine || isPlaybackTestRunning) {
       return;
@@ -1077,14 +1105,18 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
       switch (view.section) {
         case "general":
           return (
-            <GeneralSection
-              settings={settings}
-              isDesktopApp={isDesktopApp}
-              handleThemeChange={handleThemeChange}
-              handleSendBehaviorChange={handleSendBehaviorChange}
-              handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
-              handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
-            />
+            <>
+              <AgentSection serverId={anyOnlineServerId} />
+              <GeneralSection
+                settings={settings}
+                isDesktopApp={isDesktopApp}
+                handleThemeChange={handleThemeChange}
+                handleSendBehaviorChange={handleSendBehaviorChange}
+                handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
+                handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
+                handleAndroidBackgroundKeepaliveChange={handleAndroidBackgroundKeepaliveChange}
+              />
+            </>
           );
         case "shortcuts":
           return isDesktopApp ? <KeyboardShortcutsSection /> : null;

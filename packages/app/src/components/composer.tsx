@@ -20,7 +20,12 @@ import {
   Github,
   Paperclip,
 } from "lucide-react-native";
-import Animated from "react-native-reanimated";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
 import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH } from "@/constants/layout";
 import {
   AgentStatusBar,
@@ -244,6 +249,9 @@ function renderQueueList(args: RenderQueueListArgs): ReactElement | null {
   if (queuedMessages.length === 0) return null;
   return (
     <View style={styles.queueContainer}>
+      <Text style={styles.queueHeader}>
+        {queuedMessages.length} queued, sending after current run
+      </Text>
       {queuedMessages.map((item) => (
         <QueuedMessageRow
           key={item.id}
@@ -437,17 +445,28 @@ interface QueuedMessageRowProps {
 }
 
 function QueuedMessageRow({ item, onEdit, onSendNow }: QueuedMessageRowProps) {
+  const pulse = useSharedValue(0.4);
+  const pulseStyle = useAnimatedStyle(() => ({
+    opacity: pulse.value,
+  }));
+  const pulseDotStyle = useMemo(() => [styles.queuePulseDot, pulseStyle], [pulseStyle]);
   const handleEdit = useCallback(() => {
     onEdit(item.id);
   }, [onEdit, item.id]);
   const handleSendNow = useCallback(() => {
     onSendNow(item.id);
   }, [onSendNow, item.id]);
+  useEffect(() => {
+    pulse.value = withRepeat(withTiming(1, { duration: 900 }), -1, true);
+  }, [pulse]);
   return (
     <View style={styles.queueItem}>
-      <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
-        {item.text}
-      </Text>
+      <View style={styles.queueTextRow}>
+        <Animated.View style={pulseDotStyle} />
+        <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
+          {item.text}
+        </Text>
+      </View>
       <View style={styles.queueActions}>
         <Pressable
           onPress={handleEdit}
@@ -1643,6 +1662,7 @@ export function Composer({
               isAgentRunning={isAgentRunning}
               defaultSendBehavior={appSettings.sendBehavior}
               onQueue={handleQueue}
+              queuedMessageCount={queuedMessages.length}
               onSubmitLoadingPress={submitLoadingPressHandler}
               onKeyPress={handleCommandKeyPress}
               onSelectionChange={handleSelectionChange}
@@ -1799,6 +1819,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
     flexDirection: "column",
     gap: theme.spacing[2],
   },
+  queueHeader: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+  },
   queueItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -1810,6 +1834,20 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     gap: theme.spacing[2],
+    opacity: 0.72,
+  },
+  queueTextRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  queuePulseDot: {
+    width: 6,
+    height: 6,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.accent,
   },
   queueText: {
     flex: 1,

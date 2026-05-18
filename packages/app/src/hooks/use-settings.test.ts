@@ -84,11 +84,9 @@ describe("use-settings", () => {
     const result = await mod.loadSettingsFromStorage();
 
     expect(result).toEqual({
+      ...mod.DEFAULT_CLIENT_SETTINGS,
       theme: "light",
       manageBuiltInDaemon: true,
-      sendBehavior: "interrupt",
-      serviceUrlBehavior: "ask",
-      terminalScrollbackLines: 10_000,
       releaseChannel: "stable",
     });
   });
@@ -129,10 +127,8 @@ describe("use-settings", () => {
     const result = await mod.loadAppSettingsFromStorage();
 
     expect(result).toEqual({
+      ...mod.DEFAULT_CLIENT_SETTINGS,
       theme: "dark",
-      sendBehavior: "interrupt",
-      serviceUrlBehavior: "ask",
-      terminalScrollbackLines: 10_000,
     });
     expect(asyncStorageMock.setItem).toHaveBeenCalledWith(
       mod.APP_SETTINGS_KEY,
@@ -169,10 +165,8 @@ describe("use-settings", () => {
       releaseChannel: "beta",
     });
     expect(result).toEqual({
+      ...mod.DEFAULT_CLIENT_SETTINGS,
       theme: "light",
-      sendBehavior: "interrupt",
-      serviceUrlBehavior: "ask",
-      terminalScrollbackLines: 10_000,
       manageBuiltInDaemon: false,
       releaseChannel: "beta",
     });
@@ -189,13 +183,24 @@ describe("use-settings", () => {
     const result = await mod.loadSettingsFromStorage();
 
     expect(result).toEqual({
+      ...mod.DEFAULT_CLIENT_SETTINGS,
       theme: "light",
-      sendBehavior: "interrupt",
-      serviceUrlBehavior: "ask",
-      terminalScrollbackLines: 10_000,
       manageBuiltInDaemon: true,
       releaseChannel: "stable",
     });
+  });
+
+  it("loads configured Android background keepalive from app settings", async () => {
+    asyncStorageMock.getItem.mockResolvedValue(
+      JSON.stringify({
+        androidBackgroundKeepalive: false,
+      }),
+    );
+
+    const mod = await import("./use-settings");
+    const result = await mod.loadAppSettingsFromStorage();
+
+    expect(result.androidBackgroundKeepalive).toBe(false);
   });
 
   it("loads configured terminal scrollback lines from app settings", async () => {

@@ -30,6 +30,7 @@ export interface AppSettings {
   sendBehavior: SendBehavior;
   serviceUrlBehavior: ServiceUrlBehavior;
   terminalScrollbackLines: number;
+  androidBackgroundKeepalive: boolean;
 }
 
 export interface Settings extends AppSettings {
@@ -39,9 +40,10 @@ export interface Settings extends AppSettings {
 
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   theme: "auto",
-  sendBehavior: "interrupt",
+  sendBehavior: "queue",
   serviceUrlBehavior: "ask",
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
+  androidBackgroundKeepalive: true,
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -125,6 +127,9 @@ export function useSettings(): UseSettingsReturn {
       }
       if (updates.terminalScrollbackLines !== undefined) {
         appUpdates.terminalScrollbackLines = updates.terminalScrollbackLines;
+      }
+      if (updates.androidBackgroundKeepalive !== undefined) {
+        appUpdates.androidBackgroundKeepalive = updates.androidBackgroundKeepalive;
       }
       const promises: Promise<void>[] = [];
       if (Object.keys(appUpdates).length > 0) {
@@ -259,6 +264,9 @@ function pickAppSettings(stored: Partial<AppSettings>): Partial<AppSettings> {
   const terminalScrollbackLines = parseTerminalScrollbackLines(stored.terminalScrollbackLines);
   if (terminalScrollbackLines !== null) {
     result.terminalScrollbackLines = terminalScrollbackLines;
+  }
+  if (typeof stored.androidBackgroundKeepalive === "boolean") {
+    result.androidBackgroundKeepalive = stored.androidBackgroundKeepalive;
   }
   return result;
 }

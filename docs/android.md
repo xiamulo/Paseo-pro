@@ -38,6 +38,28 @@ npx cross-env APP_VARIANT=production expo run:android --variant=release
 rm -rf android
 ```
 
+## Background agent streaming
+
+Android uses a Notifee foreground service to keep the existing app WebSocket alive
+while Paseo is backgrounded. The user-facing switch is in Settings -> General ->
+Keep streaming in background and defaults on. When Android moves the app to the
+background, Paseo starts a persistent "Streaming agents in background"
+notification; when the app returns active, the foreground service is stopped.
+
+The generated Android manifest is owned by Expo prebuild. Do not edit
+`packages/app/android` by hand for this feature. The required foreground service
+permission and `remoteMessaging` service type are declared in
+`packages/app/app.config.js` so `npm run android:development` /
+`npm run android:production` can regenerate the native project. Do not use the
+`dataSync` foreground service type for this path; Android 15+ applies a 6-hour
+background timeout to `dataSync`, which does not match always-on agent output.
+
+Foreground services are still subject to Doze and vendor battery managers.
+Pixel-style Android devices should keep streaming while the app is backgrounded,
+but deep idle/device standby can suspend normal network access unless the user
+exempts Paseo from battery optimization. Xiaomi, Huawei, OPPO, Vivo, and similar
+ROMs may also require autostart or power-manager allowlisting.
+
 ## Screenshots
 
 ```bash

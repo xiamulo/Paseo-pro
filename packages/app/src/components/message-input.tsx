@@ -21,7 +21,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
+import { ArrowUp, Mic, MicOff, CornerDownLeft, ListPlus, Plus, Square } from "lucide-react-native";
 import Animated, { useSharedValue, useAnimatedStyle, withTiming } from "react-native-reanimated";
 import { useDictation } from "@/hooks/use-dictation";
 import { DictationOverlay } from "./dictation-controls";
@@ -118,6 +118,7 @@ export interface MessageInputProps {
   defaultSendBehavior?: "interrupt" | "queue";
   /** Callback for queue button when agent is running */
   onQueue?: (payload: MessagePayload) => void;
+  queuedMessageCount?: number;
   /** Optional handler used when submit button is in loading state. */
   onSubmitLoadingPress?: () => void;
   /** Intercept key press events before default handling. Return true to prevent default. */
@@ -309,13 +310,29 @@ function SendButtonContent({
   isSubmitLoading,
   submitIcon,
   buttonIconSize,
+  defaultActionQueues,
+  queuedMessageCount,
 }: {
   isSubmitLoading: boolean;
   submitIcon: "arrow" | "return";
   buttonIconSize: number;
+  defaultActionQueues: boolean;
+  queuedMessageCount: number;
 }) {
   if (isSubmitLoading) {
     return <ActivityIndicator size="small" color="white" />;
+  }
+  if (defaultActionQueues) {
+    return (
+      <View style={styles.sendButtonIconFrame}>
+        <ListPlus size={buttonIconSize} color="white" />
+        {queuedMessageCount > 0 ? (
+          <View style={styles.sendQueueBadge}>
+            <Text style={styles.sendQueueBadgeText}>+{queuedMessageCount}</Text>
+          </View>
+        ) : null}
+      </View>
+    );
   }
   if (submitIcon === "return") {
     return <CornerDownLeft size={buttonIconSize} color="white" />;
@@ -708,6 +725,7 @@ function SendButtonTooltip({
   buttonIconSize,
   submitButtonAccessibilityLabel,
   defaultActionQueues,
+  queuedMessageCount,
   sendKeys,
 }: {
   shouldShow: boolean;
@@ -722,6 +740,7 @@ function SendButtonTooltip({
   buttonIconSize: number;
   submitButtonAccessibilityLabel: string | undefined;
   defaultActionQueues: boolean;
+  queuedMessageCount: number;
   sendKeys: ShortcutChord | null | undefined;
 }) {
   if (!shouldShow) return null;
@@ -731,6 +750,11 @@ function SendButtonTooltip({
         onPress={canPressLoadingButton ? onSubmitLoadingPress : onDefaultSendAction}
         disabled={isSendButtonDisabled}
         accessibilityLabel={submitAccessibilityLabel}
+        accessibilityHint={
+          defaultActionQueues
+            ? "Queues this message and sends it when the current run completes"
+            : undefined
+        }
         accessibilityRole="button"
         style={sendButtonCombinedStyle}
       >
@@ -738,6 +762,8 @@ function SendButtonTooltip({
           isSubmitLoading={isSubmitLoading}
           submitIcon={submitIcon}
           buttonIconSize={buttonIconSize}
+          defaultActionQueues={defaultActionQueues}
+          queuedMessageCount={queuedMessageCount}
         />
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
@@ -1101,6 +1127,7 @@ interface ResolvedMessageInputProps {
   isAgentRunning: boolean;
   defaultSendBehavior: "interrupt" | "queue";
   onQueue: ((payload: MessagePayload) => void) | undefined;
+  queuedMessageCount: number;
   onSubmitLoadingPress: (() => void) | undefined;
   onKeyPressCallback: ((event: { key: string; preventDefault: () => void }) => boolean) | undefined;
   onSelectionChangeCallback: ((selection: { start: number; end: number }) => void) | undefined;
@@ -1141,6 +1168,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     isAgentRunning: props.isAgentRunning ?? false,
     defaultSendBehavior: props.defaultSendBehavior ?? "interrupt",
     onQueue: props.onQueue,
+    queuedMessageCount: props.queuedMessageCount ?? 0,
     onSubmitLoadingPress: props.onSubmitLoadingPress,
     onKeyPressCallback: props.onKeyPress,
     onSelectionChangeCallback: props.onSelectionChange,
@@ -1189,6 +1217,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isAgentRunning,
       defaultSendBehavior,
       onQueue,
+      queuedMessageCount,
       onSubmitLoadingPress,
       onKeyPressCallback,
       onSelectionChangeCallback,
@@ -1796,6 +1825,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 buttonIconSize={buttonIconSize}
                 submitButtonAccessibilityLabel={submitButtonAccessibilityLabel}
                 defaultActionQueues={defaultActionQueues}
+                queuedMessageCount={queuedMessageCount}
                 sendKeys={sendKeys}
               />
             </View>
@@ -1929,6 +1959,33 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
     marginLeft: theme.spacing[1],
+  },
+  sendButtonIconFrame: {
+    width: "100%",
+    height: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  sendQueueBadge: {
+    position: "absolute",
+    top: -8,
+    right: -10,
+    minWidth: 18,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.foreground,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: theme.colors.surface1,
+  },
+  sendQueueBadgeText: {
+    color: theme.colors.surface0,
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: theme.fontWeight.medium,
   },
   iconButtonHovered: {
     backgroundColor: theme.colors.surface2,

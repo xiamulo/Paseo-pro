@@ -53,6 +53,7 @@ import { loadDesktopSettings } from "@/desktop/settings/desktop-settings";
 import { RosettaCalloutSource } from "@/desktop/updates/rosetta-callout-source";
 import { UpdateCalloutSource } from "@/desktop/updates/update-callout-source";
 import { useActiveWorktreeNewAction } from "@/hooks/use-active-worktree-new-action";
+import { useAndroidKeepalive } from "@/hooks/use-android-keepalive";
 import { useFaviconStatus } from "@/hooks/use-favicon-status";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useLatchedBoolean } from "@/hooks/use-latched-boolean";
@@ -882,6 +883,8 @@ function AppShell() {
 }
 
 function RuntimeProviders({ children }: { children: ReactNode }) {
+  useAndroidKeepalive();
+
   return (
     <HostRuntimeBootstrapProvider>
       <PushNotificationRouter />
