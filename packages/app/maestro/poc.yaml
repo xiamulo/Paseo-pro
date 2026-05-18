@@ -1,4 +1,4 @@
-appId: sh.paseo
+appId: paseo.pro
 ---
 - launchApp:
     clearState: true
