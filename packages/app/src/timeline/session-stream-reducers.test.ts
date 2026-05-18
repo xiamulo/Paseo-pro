@@ -750,6 +750,40 @@ describe("processTimelineResponse", () => {
     expect(result.clearInitializing).toBe(true);
   });
 
+  it("keeps complete tail init pending while older history remains", () => {
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      isInitializing: true,
+      hasActiveInitDeferred: true,
+      initRequestDirection: "complete-tail",
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        hasOlder: true,
+      },
+    });
+
+    expect(result.initResolution).toBe(null);
+    expect(result.clearInitializing).toBe(false);
+  });
+
+  it("resolves complete tail init after the oldest history page loads", () => {
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      isInitializing: true,
+      hasActiveInitDeferred: true,
+      initRequestDirection: "complete-tail",
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "before",
+        hasOlder: false,
+      },
+    });
+
+    expect(result.initResolution).toBe("resolve");
+    expect(result.clearInitializing).toBe(true);
+  });
+
   it("does not resolve init when directions differ (before vs after)", () => {
     const result = processTimelineResponse({
       ...baseTimelineInput,

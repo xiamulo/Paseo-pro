@@ -17,6 +17,28 @@ function makeClient() {
   };
 }
 
+function makeTimelinePayload(overrides: Record<string, unknown> = {}) {
+  return {
+    requestId: "request-1",
+    agentId,
+    agent: null,
+    direction: "tail",
+    projection: "canonical",
+    epoch: "epoch-1",
+    reset: false,
+    staleCursor: false,
+    gap: false,
+    window: { minSeq: 1, maxSeq: 10, nextSeq: 11 },
+    startCursor: { epoch: "epoch-1", seq: 1 },
+    endCursor: { epoch: "epoch-1", seq: 10 },
+    hasOlder: false,
+    hasNewer: false,
+    entries: [],
+    error: null,
+    ...overrides,
+  };
+}
+
 afterEach(() => {
   resolveInitDeferred(getInitKey(serverId, agentId));
   useSessionStore.setState({ sessions: {}, agentLastActivity: new Map() });
@@ -70,6 +92,46 @@ describe("useAgentInitialization", () => {
       projection: "canonical",
     });
     expect(getInitDeferred(getInitKey(serverId, agentId))?.requestDirection).toBe("tail");
+  });
+
+  it("requests every older page when complete history is requested without an authoritative cursor", async () => {
+    const client = makeClient();
+    client.fetchAgentTimeline
+      .mockResolvedValueOnce(makeTimelinePayload({ hasOlder: true }))
+      .mockResolvedValueOnce(
+        makeTimelinePayload({
+          direction: "before",
+          startCursor: { epoch: "epoch-1", seq: 0 },
+          endCursor: { epoch: "epoch-1", seq: 0 },
+          hasOlder: false,
+        }),
+      );
+    useSessionStore.getState().initializeSession(serverId, client as never);
+
+    const { result } = renderHook(() =>
+      useAgentInitialization({ serverId, client: client as never }),
+    );
+
+    act(() => {
+      void result.current.ensureAgentIsInitialized(agentId, { loadCompleteHistory: true });
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(client.fetchAgentTimeline).toHaveBeenNthCalledWith(1, agentId, {
+      direction: "tail",
+      limit: TIMELINE_FETCH_PAGE_SIZE,
+      projection: "canonical",
+    });
+    expect(client.fetchAgentTimeline).toHaveBeenNthCalledWith(2, agentId, {
+      direction: "before",
+      cursor: { epoch: "epoch-1", seq: 1 },
+      limit: TIMELINE_FETCH_PAGE_SIZE,
+      projection: "canonical",
+    });
+    expect(getInitDeferred(getInitKey(serverId, agentId))?.requestDirection).toBe("complete-tail");
   });
 
   it("times out initialization after 30 seconds", async () => {

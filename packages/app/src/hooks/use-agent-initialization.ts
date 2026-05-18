@@ -11,6 +11,36 @@ import {
 import { TIMELINE_FETCH_PAGE_SIZE } from "@/timeline/timeline-fetch-policy";
 
 const INIT_TIMEOUT_MS = 30_000;
+const COMPLETE_HISTORY_INIT_TIMEOUT_MS = 120_000;
+
+interface EnsureAgentInitializedOptions {
+  loadCompleteHistory?: boolean;
+}
+
+async function fetchCompleteCanonicalTail(args: {
+  client: DaemonClient;
+  agentId: string;
+}): Promise<void> {
+  const { client, agentId } = args;
+  let payload = await client.fetchAgentTimeline(agentId, {
+    direction: "tail",
+    limit: TIMELINE_FETCH_PAGE_SIZE,
+    projection: "canonical",
+  });
+
+  while (payload.hasOlder) {
+    if (!payload.startCursor) {
+      throw new Error("Unable to continue loading agent history: missing timeline cursor");
+    }
+
+    payload = await client.fetchAgentTimeline(agentId, {
+      direction: "before",
+      cursor: payload.startCursor,
+      limit: TIMELINE_FETCH_PAGE_SIZE,
+      projection: "canonical",
+    });
+  }
+}
 
 export function useAgentInitialization({
   serverId,
@@ -35,7 +65,7 @@ export function useAgentInitialization({
   );
 
   const ensureAgentIsInitialized = useCallback(
-    (agentId: string): Promise<void> => {
+    (agentId: string, options: EnsureAgentInitializedOptions = {}): Promise<void> => {
       const key = getInitKey(serverId, agentId);
       const existing = getInitDeferred(key);
       if (existing) {
@@ -59,15 +89,23 @@ export function useAgentInitialization({
               limit: TIMELINE_FETCH_PAGE_SIZE,
               projection: "canonical" as const,
             };
+      const shouldLoadCompleteHistory =
+        options.loadCompleteHistory && timelineRequest.direction === "tail";
 
-      const deferred = createInitDeferred(key, timelineRequest.direction);
+      const deferred = createInitDeferred(
+        key,
+        shouldLoadCompleteHistory ? "complete-tail" : timelineRequest.direction,
+      );
+      const initTimeoutMs = shouldLoadCompleteHistory
+        ? COMPLETE_HISTORY_INIT_TIMEOUT_MS
+        : INIT_TIMEOUT_MS;
       const timeoutId = setTimeout(() => {
         setAgentInitializing(agentId, false);
         rejectInitDeferred(
           key,
-          new Error(`History sync timed out after ${Math.round(INIT_TIMEOUT_MS / 1000)}s`),
+          new Error(`History sync timed out after ${Math.round(initTimeoutMs / 1000)}s`),
         );
-      }, INIT_TIMEOUT_MS);
+      }, initTimeoutMs);
       attachInitTimeout(key, timeoutId);
 
       setAgentInitializing(agentId, true);
@@ -78,7 +116,11 @@ export function useAgentInitialization({
         return deferred.promise;
       }
 
-      client.fetchAgentTimeline(agentId, timelineRequest).catch((error) => {
+      const fetch = shouldLoadCompleteHistory
+        ? fetchCompleteCanonicalTail({ client, agentId })
+        : client.fetchAgentTimeline(agentId, timelineRequest);
+
+      fetch.catch((error) => {
         setAgentInitializing(agentId, false);
         rejectInitDeferred(key, error instanceof Error ? error : new Error(String(error)));
       });

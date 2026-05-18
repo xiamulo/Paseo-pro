@@ -41,7 +41,7 @@ export interface AgentStreamReducerSideEffect {
 // ---------------------------------------------------------------------------
 
 type TimelineDirection = "tail" | "before" | "after";
-type InitRequestDirection = "tail" | "after";
+type InitRequestDirection = "tail" | "after" | "complete-tail";
 
 type SessionTimelineSeqCursor =
   | {
@@ -171,18 +171,23 @@ function shouldResolveTimelineInit({
   initRequestDirection,
   responseDirection,
   reset,
+  hasOlder,
 }: {
   hasActiveInitDeferred: boolean;
   isInitializing: boolean;
   initRequestDirection: InitRequestDirection;
   responseDirection: TimelineDirection;
   reset: boolean;
+  hasOlder: boolean;
 }): boolean {
   if (!hasActiveInitDeferred || !isInitializing) {
     return false;
   }
   if (reset) {
     return true;
+  }
+  if (initRequestDirection === "complete-tail") {
+    return (responseDirection === "tail" || responseDirection === "before") && !hasOlder;
   }
   return responseDirection === initRequestDirection;
 }
@@ -562,6 +567,7 @@ export function processTimelineResponse(
     initRequestDirection,
     responseDirection: payload.direction,
     reset: payload.reset,
+    hasOlder: payload.hasOlder,
   });
   const clearInitializing = shouldResolveDeferredInit || (isInitializing && !hasActiveInitDeferred);
 
