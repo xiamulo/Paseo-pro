@@ -105,6 +105,17 @@ function resolveBatchCommitEverySeconds(): number {
   return parsed;
 }
 
+function pcmDurationMs(byteLength: number, sampleRate: number): number {
+  return (byteLength / 2 / sampleRate) * 1000;
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface SessionTranscriptionResult extends TranscriptionResult {
   debugRecordingPath?: string;
   byteLength: number;
@@ -255,7 +266,7 @@ export class STTManager {
       );
       const commitEverySeconds = resolveBatchCommitEverySeconds();
       const commitEveryBytes =
-        commitEverySeconds > 0
+        session.supportsIncrementalCommit !== false && commitEverySeconds > 0
           ? Math.max(1, Math.round(session.requiredSampleRate * 2 * commitEverySeconds))
           : 0;
 
@@ -270,6 +281,9 @@ export class STTManager {
         }
         session.appendPcm16(chunk);
         bytesSinceCommit += chunk.length;
+        if (session.appendPacing === "realtime") {
+          await sleep(pcmDurationMs(chunk.length, session.requiredSampleRate));
+        }
 
         if (commitEveryBytes > 0 && bytesSinceCommit >= commitEveryBytes) {
           session.commit();

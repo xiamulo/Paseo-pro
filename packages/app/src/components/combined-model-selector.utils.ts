@@ -5,6 +5,10 @@ import { compareMatchScores, scoreTextFields } from "@/utils/score-match";
 
 export type SelectorModelRow = FavoriteModelRow;
 
+export type SelectorView =
+  | { kind: "all" }
+  | { kind: "provider"; providerId: string; providerLabel: string };
+
 export function resolveProviderLabel(
   providerDefinitions: AgentProviderDefinition[],
   providerId: string,
@@ -42,6 +46,40 @@ export function buildModelRows(
   }
 
   return rows;
+}
+
+export function resolveInitialSelectorView(input: {
+  providerDefinitions: AgentProviderDefinition[];
+  selectedProvider: string;
+  selectedModel: string;
+  favoriteKeys: Set<string>;
+  singleProviderView: SelectorView | null;
+}): SelectorView {
+  if (input.singleProviderView) {
+    return input.singleProviderView;
+  }
+
+  const selectedProvider = input.selectedProvider.trim();
+  if (!selectedProvider) {
+    return { kind: "all" };
+  }
+
+  const selectedModel = input.selectedModel.trim();
+  const selectedFavoriteKey = buildFavoriteModelKey({
+    provider: selectedProvider,
+    modelId: selectedModel,
+  });
+  const shouldShowFavorites =
+    selectedModel.length > 0 && input.favoriteKeys.has(selectedFavoriteKey);
+  if (shouldShowFavorites) {
+    return { kind: "all" };
+  }
+
+  return {
+    kind: "provider",
+    providerId: selectedProvider,
+    providerLabel: resolveProviderLabel(input.providerDefinitions, selectedProvider),
+  };
 }
 
 export function matchesSearch(row: SelectorModelRow, normalizedQuery: string): boolean {

@@ -111,7 +111,9 @@ import { FileBackedChatService } from "./chat/chat-service.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
-import { DaemonConfigStore } from "./daemon-config-store.js";
+import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
+import { loadPersistedConfig, type PersistedConfig } from "./persisted-config.js";
+import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { archivePersistedWorkspaceRecord } from "./workspace-archive-service.js";
 import { setupAutoArchiveOnMerge } from "./auto-archive-on-merge/index.js";
@@ -129,7 +131,6 @@ import type {
   AgentProviderRuntimeSettingsMap,
   ProviderOverride,
 } from "./agent/provider-launch-config.js";
-import type { PersistedConfig } from "./persisted-config.js";
 import {
   ScriptRouteStore,
   createScriptProxyMiddleware,
@@ -268,6 +269,32 @@ export interface PaseoDaemon {
   getListenTarget(): ListenTarget | null;
 }
 
+function buildInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
+  return {
+    mcp: { injectIntoAgents: config.mcpInjectIntoAgents ?? true },
+    providers: Object.fromEntries(
+      Object.entries(config.providerOverrides ?? {}).map(([providerId, override]) => [
+        providerId,
+        {
+          ...(override.enabled !== undefined ? { enabled: override.enabled } : {}),
+          ...(override.additionalModels ? { additionalModels: override.additionalModels } : {}),
+        },
+      ]),
+    ),
+    speech: {
+      providers: {
+        ...(config.speech?.providers.dictationStt.provider
+          ? { dictationStt: config.speech.providers.dictationStt.provider }
+          : {}),
+        ...(config.speech?.providers.voiceStt.provider
+          ? { voiceStt: config.speech.providers.voiceStt.provider }
+          : {}),
+      },
+    },
+    autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
+  };
+}
+
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,
@@ -278,19 +305,7 @@ export async function createPaseoDaemon(
   const daemonVersion = resolveDaemonVersion(import.meta.url);
   const daemonConfigStore = new DaemonConfigStore(
     config.paseoHome,
-    {
-      mcp: { injectIntoAgents: config.mcpInjectIntoAgents ?? true },
-      providers: Object.fromEntries(
-        Object.entries(config.providerOverrides ?? {}).map(([providerId, override]) => [
-          providerId,
-          {
-            ...(override.enabled !== undefined ? { enabled: override.enabled } : {}),
-            ...(override.additionalModels ? { additionalModels: override.additionalModels } : {}),
-          },
-        ]),
-      ),
-      autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
-    },
+    buildInitialMutableDaemonConfig(config),
     logger,
   );
 
@@ -841,6 +856,22 @@ export async function createPaseoDaemon(
     openaiConfig: config.openai,
     speechConfig: config.speech,
   });
+  const unsubscribeSpeechConfigChange = daemonConfigStore.onChange(() => {
+    try {
+      const persisted = loadPersistedConfig(config.paseoHome, logger);
+      const nextSpeechConfig = resolveSpeechConfig({
+        paseoHome: config.paseoHome,
+        env: process.env,
+        persisted,
+      });
+      speechService.updateConfig({
+        openaiConfig: nextSpeechConfig.openai,
+        speechConfig: nextSpeechConfig.speech,
+      });
+    } catch (error) {
+      logger.error({ err: error }, "Failed to reload speech configuration");
+    }
+  });
   logger.info({ elapsed: elapsed() }, "Speech service created");
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
@@ -1010,6 +1041,7 @@ export async function createPaseoDaemon(
     });
     terminalManager.killAll();
     speechService.stop();
+    unsubscribeSpeechConfigChange();
     await scheduleService.stop().catch(() => undefined);
     await relayTransport?.stop().catch(() => undefined);
     if (wsServer) {

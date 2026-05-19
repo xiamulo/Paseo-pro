@@ -17,6 +17,7 @@ class FakeRealtimeSession extends EventEmitter implements StreamingTranscription
   clearCalls = 0;
   closed = false;
   requiredSampleRate = 24000;
+  supportsIncrementalCommit?: boolean;
 
   async connect(): Promise<void> {
     this.connected = true;
@@ -296,6 +297,39 @@ describe("DictationStreamManager (provider-agnostic provider)", () => {
         process.env.PASEO_DICTATION_DEBUG = originalDebug;
       }
     }
+  });
+
+  it("does not auto-commit providers that require a single final commit", async () => {
+    const session = new FakeRealtimeSession();
+    session.supportsIncrementalCommit = false;
+    const emitted: Array<{ type: string; payload: unknown }> = [];
+    const manager = new DictationStreamManager({
+      logger: pino({ level: "silent" }),
+      emit: (msg) => emitted.push(msg),
+      sessionId: "s1",
+      stt: new FakeSttProvider(session),
+      autoCommitSeconds: 1,
+    });
+
+    await manager.handleStart("d-single-commit", "audio/pcm;rate=24000;bits=16");
+
+    await manager.handleChunk({
+      dictationId: "d-single-commit",
+      seq: 0,
+      audioBase64: buildPcmBase64(2000, 24000),
+      format: "audio/pcm;rate=24000;bits=16",
+    });
+    expect(session.commitCalls).toBe(0);
+
+    await manager.handleFinish("d-single-commit", 0);
+    expect(session.commitCalls).toBe(1);
+
+    session.emitCommitted("seg-1");
+    session.emitTranscript("seg-1", "hello", true);
+    await tick();
+
+    const final = emitted.find((msg) => msg.type === "dictation_stream_final");
+    expect((final?.payload as { text?: string } | undefined)?.text).toBe("hello");
   });
 
   it("adapts finish timeout based on pending committed segments", async () => {

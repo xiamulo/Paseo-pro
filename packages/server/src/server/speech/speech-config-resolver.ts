@@ -168,7 +168,6 @@ export function resolveSpeechConfig(params: {
     persisted: params.persisted,
     providers,
   });
-
   return {
     openai,
     speech: {

@@ -49,16 +49,14 @@ import {
   buildModelRows,
   buildSelectedTriggerLabel,
   filterAndRankModelRows,
+  resolveInitialSelectorView,
   resolveProviderLabel,
+  type SelectorView,
   type SelectorModelRow,
 } from "./combined-model-selector.utils";
 
 // TODO: this should be configured per provider in the provider manifest
 const PROVIDERS_WITH_MODEL_DESCRIPTIONS = new Set(["opencode", "pi"]);
-
-type SelectorView =
-  | { kind: "all" }
-  | { kind: "provider"; providerId: string; providerLabel: string };
 
 interface CombinedModelSelectorProps {
   providerDefinitions: AgentProviderDefinition[];
@@ -554,15 +552,13 @@ export function CombinedModelSelector({
   }, [allProviderModels, providerDefinitions]);
 
   const computeInitialView = useCallback((): SelectorView => {
-    if (singleProviderView) return singleProviderView;
-
-    const selectedFavoriteKey = `${selectedProvider}:${selectedModel}`;
-    if (selectedProvider && selectedModel && !favoriteKeys.has(selectedFavoriteKey)) {
-      const label = resolveProviderLabel(providerDefinitions, selectedProvider);
-      return { kind: "provider", providerId: selectedProvider, providerLabel: label };
-    }
-
-    return { kind: "all" };
+    return resolveInitialSelectorView({
+      providerDefinitions,
+      selectedProvider,
+      selectedModel,
+      favoriteKeys,
+      singleProviderView,
+    });
   }, [singleProviderView, selectedProvider, selectedModel, favoriteKeys, providerDefinitions]);
 
   const handleOpenChange = useCallback(

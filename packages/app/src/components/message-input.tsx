@@ -57,6 +57,7 @@ import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerHeightMirror } from "./composer-height-mirror";
 import { computeCanStartDictation } from "./message-input-state";
+import { isAliyunSpeechConfigured, useAliyunSpeechSettings } from "@/speech/aliyun-speech-settings";
 
 export type ImageAttachment = AttachmentMetadata;
 
@@ -1007,7 +1008,11 @@ function computeIsDictationStartEnabled(
   isReadyForDictation: boolean | undefined,
   isConnected: boolean,
   disabled: boolean,
+  usesAppSideSpeech: boolean,
 ): boolean {
+  if (usesAppSideSpeech) {
+    return !disabled;
+  }
   return (isReadyForDictation ?? isConnected) && !disabled;
 }
 
@@ -1325,6 +1330,12 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       serverInfo,
       mode: "dictation",
     });
+    const { settings: aliyunSpeechSettings } = useAliyunSpeechSettings();
+    const usesAppSideSpeech =
+      aliyunSpeechSettings.enabled || isAliyunSpeechConfigured(aliyunSpeechSettings);
+    const effectiveDictationUnavailableMessage = usesAppSideSpeech
+      ? null
+      : dictationUnavailableMessage;
 
     const canStartDictation = useCallback(
       () =>
@@ -1332,17 +1343,28 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
           client,
           isReadyForDictation,
           disabled,
-          dictationUnavailableMessage,
+          dictationUnavailableMessage: effectiveDictationUnavailableMessage,
+          usesAppSideSpeech,
         }),
-      [client, disabled, dictationUnavailableMessage, isReadyForDictation],
+      [
+        client,
+        disabled,
+        effectiveDictationUnavailableMessage,
+        isReadyForDictation,
+        usesAppSideSpeech,
+      ],
     );
 
-    const canConfirmDictation = useCallback(() => client?.isConnected ?? false, [client]);
+    const canConfirmDictation = useCallback(
+      () => usesAppSideSpeech || (client?.isConnected ?? false),
+      [client, usesAppSideSpeech],
+    );
     const isConnected = client?.isConnected ?? false;
     const isDictationStartEnabled = computeIsDictationStartEnabled(
       isReadyForDictation,
       isConnected,
       disabled,
+      usesAppSideSpeech,
     );
 
     const {
@@ -1395,13 +1417,13 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
     const startDictationIfAvailable = useCallback(
       () =>
         startDictationIfAvailableImpl({
-          dictationUnavailableMessage,
+          dictationUnavailableMessage: effectiveDictationUnavailableMessage,
           canStartDictation,
           isDictatingRef,
           toast,
           startDictation,
         }),
-      [canStartDictation, dictationUnavailableMessage, startDictation, toast],
+      [canStartDictation, effectiveDictationUnavailableMessage, startDictation, toast],
     );
 
     // Animate overlay

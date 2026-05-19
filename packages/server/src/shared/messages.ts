@@ -105,6 +105,22 @@ const MutableDaemonProviderConfigSchema = z
   })
   .passthrough();
 
+const MutableSpeechProviderIdSchema = z.enum(["openai", "local"]);
+
+const MutableDaemonSpeechConfigBaseSchema = z
+  .object({
+    providers: z
+      .object({
+        dictationStt: MutableSpeechProviderIdSchema.optional(),
+        voiceStt: MutableSpeechProviderIdSchema.optional(),
+      })
+      .passthrough()
+      .default({}),
+  })
+  .passthrough();
+
+const MutableDaemonSpeechConfigSchema = MutableDaemonSpeechConfigBaseSchema.default({});
+
 export const MutableDaemonConfigSchema = z
   .object({
     mcp: z
@@ -113,6 +129,7 @@ export const MutableDaemonConfigSchema = z
       })
       .passthrough(),
     providers: z.record(z.string(), MutableDaemonProviderConfigSchema).default({}),
+    speech: MutableDaemonSpeechConfigSchema,
     autoArchiveAfterMerge: z.boolean().default(false),
   })
   .passthrough();
@@ -123,6 +140,7 @@ export const MutableDaemonConfigPatchSchema = z
     providers: z
       .record(z.string(), MutableDaemonProviderConfigSchema.partial().passthrough())
       .optional(),
+    speech: MutableDaemonSpeechConfigBaseSchema.partial().optional(),
     autoArchiveAfterMerge: z.boolean().optional(),
   })
   .partial()

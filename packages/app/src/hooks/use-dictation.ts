@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AliyunDictationSession } from "@/dictation/aliyun-dictation-session";
 import { DictationStreamSender } from "@/dictation/dictation-stream-sender";
 import { useDictationAudioSource } from "@/hooks/use-dictation-audio-source";
+import { isAliyunSpeechConfigured, useAliyunSpeechSettings } from "@/speech/aliyun-speech-settings";
 import { generateMessageId } from "@/types/stream";
 import { AttemptGuard } from "@/utils/attempt-guard";
 import {
@@ -32,6 +34,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<DictationStatus>("idle");
   const latestPartialTranscriptRef = useRef("");
+  const { settings: aliyunSettings } = useAliyunSpeechSettings();
+  const aliyunSettingsRef = useRef(aliyunSettings);
+  useEffect(() => {
+    aliyunSettingsRef.current = aliyunSettings;
+  }, [aliyunSettings]);
 
   const onTranscriptRef = useRef(onTranscript);
   useEffect(() => {
@@ -74,6 +81,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   });
 
   const senderRef = useRef<DictationStreamSender | null>(null);
+  const aliyunSessionRef = useRef<AliyunDictationSession | null>(null);
+  const aliyunSegmentsRef = useRef<string[]>([]);
   if (!senderRef.current) {
     senderRef.current = new DictationStreamSender({
       client,
@@ -130,6 +139,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const clearStreamingState = useCallback(() => {
     senderRef.current?.clearAll();
+    aliyunSessionRef.current?.close();
+    aliyunSessionRef.current = null;
+    aliyunSegmentsRef.current = [];
     latestPartialTranscriptRef.current = "";
     setPartialTranscript("");
   }, []);
@@ -143,6 +155,18 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     return result.text;
   }, []);
 
+  const emitAliyunPartial = useCallback((text: string) => {
+    latestPartialTranscriptRef.current = text;
+    setPartialTranscript(text);
+    onPartialTranscriptRef.current?.(text, { requestId: generateMessageId() });
+  }, []);
+
+  const createAliyunSession = useCallback((): AliyunDictationSession => {
+    return new AliyunDictationSession(aliyunSettingsRef.current, {
+      onPartial: emitAliyunPartial,
+    });
+  }, [emitAliyunPartial]);
+
   useEffect(() => {
     if (!client) {
       return;
@@ -152,6 +176,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         return;
       }
       if (!isRecordingRef.current) {
+        return;
+      }
+      if (aliyunSessionRef.current) {
         return;
       }
       void startNewStream("reconnect").catch((err) => {
@@ -184,6 +211,15 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
 
   const audio = useDictationAudioSource({
     onPcmSegment: (audioData) => {
+      if (isAliyunSpeechConfigured(aliyunSettingsRef.current)) {
+        aliyunSegmentsRef.current.push(audioData);
+        try {
+          aliyunSessionRef.current?.appendPcm16Base64(audioData);
+        } catch (err) {
+          onErrorRef.current?.(toError(err));
+        }
+        return;
+      }
       senderRef.current?.enqueueSegment(audioData);
     },
     onError: (err) => {
@@ -223,7 +259,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       isRecordingRef.current = false;
       setIsRecording(false);
 
-      if (senderRef.current?.hasSegments()) {
+      if (senderRef.current?.hasSegments() || aliyunSegmentsRef.current.length > 0) {
         setStatus("failed");
         onPermanentFailureRef.current?.(normalized, { requestId: failureId });
       } else {
@@ -246,7 +282,21 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     if (isRecordingRef.current || isProcessingRef.current) {
       return;
     }
-    const startAllowed = canStart ? canStart() : true;
+    const currentAliyunSettings = aliyunSettingsRef.current;
+    const useAliyun = isAliyunSpeechConfigured(currentAliyunSettings);
+    if (currentAliyunSettings.enabled && !useAliyun) {
+      reportError(
+        new Error(
+          "Alibaba Cloud NLS is enabled but AppKey, AccessKey ID, or AccessKey Secret is missing.",
+        ),
+        "Alibaba Cloud NLS settings are incomplete",
+      );
+      return;
+    }
+    let startAllowed = true;
+    if (!useAliyun && canStart) {
+      startAllowed = canStart();
+    }
     if (!startAllowed) {
       return;
     }
@@ -260,17 +310,24 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     clearStreamingState();
 
     try {
+      if (useAliyun) {
+        const aliyunSession = createAliyunSession();
+        aliyunSessionRef.current = aliyunSession;
+        await aliyunSession.connect();
+      }
       await audio.start();
       isRecordingRef.current = true;
       setIsRecording(true);
       if (enableDuration) {
         startDurationTracking();
       }
-      if (client?.isConnected) {
+      if (!useAliyun && client?.isConnected) {
         await startNewStream("start");
       }
     } catch (err) {
       await audio.stop().catch(() => undefined);
+      aliyunSessionRef.current?.close();
+      aliyunSessionRef.current = null;
       stopDurationTracking();
       isRecordingRef.current = false;
       setIsRecording(false);
@@ -285,6 +342,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     clearStreamingState,
     client,
     enableDuration,
+    createAliyunSession,
     reportError,
     startDurationTracking,
     startNewStream,
@@ -307,6 +365,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     try {
       try {
         senderRef.current?.cancel();
+        aliyunSessionRef.current?.close();
       } catch {
         // no-op
       }
@@ -331,7 +390,11 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     if (!isRecordingRef.current || isProcessingRef.current) {
       return;
     }
-    const confirmAllowed = canConfirm ? canConfirm() : true;
+    const useAliyun = Boolean(aliyunSessionRef.current);
+    let confirmAllowed = true;
+    if (!useAliyun && canConfirm) {
+      confirmAllowed = canConfirm();
+    }
     if (!confirmAllowed) {
       return;
     }
@@ -351,6 +414,19 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       setStatus("uploading");
       isRecordingRef.current = false;
       setIsRecording(false);
+
+      if (useAliyun) {
+        const aliyunSession = aliyunSessionRef.current;
+        if (!aliyunSession || aliyunSegmentsRef.current.length === 0) {
+          handleStreamingTranscriptionSuccess("", generateMessageId());
+          return;
+        }
+        const transcriptText = await aliyunSession.finish();
+        aliyunSession.close();
+        attemptGuardRef.current.assertCurrent(attemptId);
+        handleStreamingTranscriptionSuccess(transcriptText, generateMessageId());
+        return;
+      }
 
       const finalSeq = senderRef.current?.getFinalSeq() ?? -1;
       if (finalSeq < 0) {
@@ -379,7 +455,8 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   ]);
 
   const retryFailedDictation = useCallback(async () => {
-    if (!senderRef.current?.hasSegments()) {
+    const hasAliyunSegments = aliyunSegmentsRef.current.length > 0;
+    if (!senderRef.current?.hasSegments() && !hasAliyunSegments) {
       return;
     }
     setError(null);
@@ -388,11 +465,33 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     isProcessingRef.current = true;
 
     try {
+      if (hasAliyunSegments) {
+        if (!isAliyunSpeechConfigured(aliyunSettingsRef.current)) {
+          throw new Error(
+            "Alibaba Cloud NLS settings are incomplete, so the saved recording cannot be retried.",
+          );
+        }
+        const session = createAliyunSession();
+        aliyunSessionRef.current = session;
+        await session.connect();
+        for (const segment of aliyunSegmentsRef.current) {
+          session.appendPcm16Base64(segment);
+        }
+        const text = await session.finish();
+        session.close();
+        handleStreamingTranscriptionSuccess(text, generateMessageId());
+        return;
+      }
+
       if (!client?.isConnected) {
         throw new Error("Daemon client is disconnected");
       }
-      senderRef.current.resetStreamForReplay();
-      const finalSeq = senderRef.current.getFinalSeq();
+      const sender = senderRef.current;
+      if (!sender) {
+        throw new Error("Dictation stream is not available");
+      }
+      sender.resetStreamForReplay();
+      const finalSeq = sender.getFinalSeq();
       const text = await ensureFinalTranscript(finalSeq);
       handleStreamingTranscriptionSuccess(text, generateMessageId());
     } catch (err) {
@@ -401,7 +500,13 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       }
       handleDictationFailure(err);
     }
-  }, [client, ensureFinalTranscript, handleDictationFailure, handleStreamingTranscriptionSuccess]);
+  }, [
+    client,
+    createAliyunSession,
+    ensureFinalTranscript,
+    handleDictationFailure,
+    handleStreamingTranscriptionSuccess,
+  ]);
 
   const discardFailedDictation = useCallback(() => {
     setIsProcessing(false);

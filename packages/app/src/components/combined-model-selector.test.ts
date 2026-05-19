@@ -5,6 +5,7 @@ import {
   buildSelectedTriggerLabel,
   filterAndRankModelRows,
   matchesSearch,
+  resolveInitialSelectorView,
   resolveProviderLabel,
 } from "./combined-model-selector.utils";
 
@@ -115,5 +116,33 @@ describe("combined model selector helpers", () => {
   it("keeps the selected trigger label model-only", () => {
     expect(resolveProviderLabel(providerDefinitions, "codex")).toBe("Codex");
     expect(buildSelectedTriggerLabel("GPT-5.4")).toBe("GPT-5.4");
+  });
+
+  it("opens directly to the selected provider even before a model is selected", () => {
+    expect(
+      resolveInitialSelectorView({
+        providerDefinitions,
+        selectedProvider: "claude",
+        selectedModel: "",
+        favoriteKeys: new Set(),
+        singleProviderView: null,
+      }),
+    ).toEqual({
+      kind: "provider",
+      providerId: "claude",
+      providerLabel: "Claude",
+    });
+  });
+
+  it("keeps favorite selected models visible at the top level", () => {
+    expect(
+      resolveInitialSelectorView({
+        providerDefinitions,
+        selectedProvider: "claude",
+        selectedModel: "sonnet-4.6",
+        favoriteKeys: new Set(["claude:sonnet-4.6"]),
+        singleProviderView: null,
+      }),
+    ).toEqual({ kind: "all" });
   });
 });

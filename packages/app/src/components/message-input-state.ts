@@ -5,7 +5,11 @@ export function computeCanStartDictation(input: {
   isReadyForDictation: boolean | undefined;
   disabled: boolean;
   dictationUnavailableMessage: string | null | undefined;
+  usesAppSideSpeech?: boolean;
 }): boolean {
+  if (input.usesAppSideSpeech) {
+    return !input.disabled;
+  }
   const socketConnected = input.client?.isConnected ?? false;
   const readyForDictation = input.isReadyForDictation ?? socketConnected;
   return (

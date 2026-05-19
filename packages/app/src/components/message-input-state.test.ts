@@ -90,4 +90,28 @@ describe("computeCanStartDictation", () => {
       }),
     ).toBe(false);
   });
+
+  it("allows app-side speech without a daemon connection", () => {
+    expect(
+      computeCanStartDictation({
+        client: disconnected,
+        isReadyForDictation: false,
+        disabled: false,
+        dictationUnavailableMessage: "Dictation unavailable",
+        usesAppSideSpeech: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps disabled input disabled for app-side speech", () => {
+    expect(
+      computeCanStartDictation({
+        client: disconnected,
+        isReadyForDictation: false,
+        disabled: true,
+        dictationUnavailableMessage: null,
+        usesAppSideSpeech: true,
+      }),
+    ).toBe(false);
+  });
 });

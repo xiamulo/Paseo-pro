@@ -349,6 +349,10 @@ export interface SpeechService {
   resolveDictationSttLanguage: () => string;
   getReadiness: () => SpeechReadinessSnapshot;
   onReadinessChange: (listener: (snapshot: SpeechReadinessSnapshot) => void) => () => void;
+  updateConfig: (config: {
+    openaiConfig?: PaseoOpenAIConfig;
+    speechConfig?: PaseoSpeechConfig;
+  }) => void;
   start: () => void;
   stop: () => void;
   ready: Promise<void>;
@@ -360,10 +364,10 @@ export function createSpeechService(params: {
   speechConfig?: PaseoSpeechConfig;
 }): SpeechService {
   const logger = params.logger.child({ module: "speech-runtime" });
-  const speechConfig = params.speechConfig ?? null;
-  const openaiConfig = params.openaiConfig;
-  const providers = resolveRequestedSpeechProviders(speechConfig);
-  const requestedProviders = describeRequestedProviders(providers);
+  let speechConfig = params.speechConfig ?? null;
+  let openaiConfig = params.openaiConfig;
+  let providers = resolveRequestedSpeechProviders(speechConfig);
+  let requestedProviders = describeRequestedProviders(providers);
 
   validateOpenAiCredentialRequirements({
     providers,
@@ -708,6 +712,36 @@ export function createSpeechService(params: {
     localCleanup();
   };
 
+  const updateConfig = (nextConfig: {
+    openaiConfig?: PaseoOpenAIConfig;
+    speechConfig?: PaseoSpeechConfig;
+  }): void => {
+    speechConfig = nextConfig.speechConfig ?? null;
+    openaiConfig = nextConfig.openaiConfig;
+    providers = resolveRequestedSpeechProviders(speechConfig);
+    requestedProviders = describeRequestedProviders(providers);
+
+    logger.info(
+      {
+        requestedProviders,
+        availability: {
+          openai: getOpenAiSpeechAvailability(openaiConfig),
+        },
+      },
+      "Speech provider configuration changed",
+    );
+
+    if (!started || stopped) {
+      publishReadinessIfChanged();
+      return;
+    }
+
+    void runReconcile().catch((error) => {
+      logger.error({ err: error }, "Speech runtime failed to reconcile updated configuration");
+      publishReadinessIfChanged();
+    });
+  };
+
   return {
     resolveTurnDetection: () => turnDetectionService,
     resolveStt: () => sttService,
@@ -717,6 +751,7 @@ export function createSpeechService(params: {
     resolveDictationSttLanguage: () => speechConfig?.sttLanguages?.dictation ?? "en",
     getReadiness: () => lastPublishedReadinessSnapshot ?? computeReadinessSnapshot(),
     onReadinessChange: subscribeSpeechReadiness,
+    updateConfig,
     start,
     stop,
     ready,

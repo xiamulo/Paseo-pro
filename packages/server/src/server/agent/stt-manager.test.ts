@@ -95,6 +95,38 @@ class SequencedFakeStt implements SpeechToTextProvider {
   }
 }
 
+class SingleCommitFakeStt implements SpeechToTextProvider {
+  public readonly id = "fake-single-commit";
+  public commitCalls = 0;
+
+  createSession(_params: SessionParams): StreamingTranscriptionSession {
+    const emitter = new EventEmitter();
+
+    return {
+      requiredSampleRate: 24000,
+      supportsIncrementalCommit: false,
+      async connect() {},
+      appendPcm16() {},
+      commit: () => {
+        this.commitCalls += 1;
+        emitter.emit("committed", { segmentId: "seg-1", previousSegmentId: null });
+        emitter.emit("transcript", {
+          segmentId: "seg-1",
+          transcript: "single final",
+          isFinal: true,
+          language: "en",
+        });
+      },
+      clear() {},
+      close() {},
+      on(event: StreamingOnEvent, handler: StreamingOnHandler) {
+        emitter.on(event, handler as (...args: unknown[]) => void);
+        return undefined;
+      },
+    };
+  }
+}
+
 describe("STTManager", () => {
   function resolveVoiceLanguage(params: { env?: NodeJS.ProcessEnv; persisted?: unknown }): string {
     const result = resolveSpeechConfig({
@@ -251,6 +283,28 @@ describe("STTManager", () => {
       expect(result.text).toBe("alpha beta gamma");
       expect(result.language).toBe("en");
       expect(result.byteLength).toBe(threeSecondsPcm.length);
+    } finally {
+      if (original === undefined) {
+        delete process.env.PASEO_STT_BATCH_COMMIT_EVERY_SECONDS;
+      } else {
+        process.env.PASEO_STT_BATCH_COMMIT_EVERY_SECONDS = original;
+      }
+    }
+  });
+
+  it("uses one final commit for providers that cannot commit while streaming", async () => {
+    const original = process.env.PASEO_STT_BATCH_COMMIT_EVERY_SECONDS;
+    process.env.PASEO_STT_BATCH_COMMIT_EVERY_SECONDS = "1";
+
+    try {
+      const provider = new SingleCommitFakeStt();
+      const manager = new STTManager("s1", pino({ level: "silent" }), provider);
+
+      const threeSecondsPcm = Buffer.alloc(24000 * 2 * 3);
+      const result = await manager.transcribe(threeSecondsPcm, "audio/pcm;rate=24000");
+
+      expect(provider.commitCalls).toBe(1);
+      expect(result.text).toBe("single final");
     } finally {
       if (original === undefined) {
         delete process.env.PASEO_STT_BATCH_COMMIT_EVERY_SECONDS;

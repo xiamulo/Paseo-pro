@@ -279,7 +279,7 @@ export class DictationStreamManager {
 
     const outputRate = stt.requiredSampleRate;
     const autoCommitBytes =
-      this.autoCommitSeconds > 0
+      stt.supportsIncrementalCommit !== false && this.autoCommitSeconds > 0
         ? Math.max(1, Math.round(this.autoCommitSeconds * outputRate * 2))
         : 0;
 

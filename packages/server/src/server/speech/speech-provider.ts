@@ -37,6 +37,16 @@ export interface StreamingTranscriptionSession {
    * Callers are responsible for resampling before appending.
    */
   requiredSampleRate: number;
+  /**
+   * Whether `commit()` can be called multiple times while the session remains
+   * open. Defaults to true for providers that omit the field.
+   */
+  supportsIncrementalCommit?: boolean;
+  /**
+   * Some realtime providers reject audio sent much faster than wall-clock time.
+   * Defaults to "none" for providers that buffer server-side.
+   */
+  appendPacing?: "none" | "realtime";
 
   connect(): Promise<void>;
   appendPcm16(pcm16le: Buffer): void;

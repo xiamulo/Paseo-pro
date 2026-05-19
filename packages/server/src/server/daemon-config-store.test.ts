@@ -178,4 +178,35 @@ describe("DaemonConfigStore", () => {
       env: {},
     });
   });
+
+  test("patch persists daemon speech provider choices without credentials", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+
+    const store = new DaemonConfigStore(
+      paseoHome,
+      {
+        mcp: { injectIntoAgents: false },
+        providers: {},
+        speech: {
+          providers: {},
+        },
+        autoArchiveAfterMerge: false,
+      },
+      undefined,
+    );
+
+    store.patch({
+      speech: {
+        providers: {
+          dictationStt: "openai",
+          voiceStt: "openai",
+        },
+      },
+    });
+
+    const persisted = loadPersistedConfig(paseoHome);
+    expect(persisted.features?.dictation?.stt?.provider).toBe("openai");
+    expect(persisted.features?.voiceMode?.stt?.provider).toBe("openai");
+  });
 });

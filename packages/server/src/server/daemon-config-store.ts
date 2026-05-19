@@ -176,6 +176,8 @@ function mergeMutableConfigIntoPersistedConfig(params: {
   const persistedAgents = persisted.agents as
     | ({ providers?: Record<string, ProviderOverride> } & Record<string, unknown>)
     | undefined;
+  const dictationSttProvider = mutable.speech.providers.dictationStt;
+  const voiceSttProvider = mutable.speech.providers.voiceStt;
 
   return {
     ...persisted,
@@ -194,5 +196,22 @@ function mergeMutableConfigIntoPersistedConfig(params: {
             providers: providerOverrides,
           }
         : persisted.agents,
+    features: {
+      ...persisted.features,
+      dictation: {
+        ...persisted.features?.dictation,
+        stt: {
+          ...persisted.features?.dictation?.stt,
+          ...(dictationSttProvider ? { provider: dictationSttProvider } : {}),
+        },
+      },
+      voiceMode: {
+        ...persisted.features?.voiceMode,
+        stt: {
+          ...persisted.features?.voiceMode?.stt,
+          ...(voiceSttProvider ? { provider: voiceSttProvider } : {}),
+        },
+      },
+    },
   } as PersistedConfig;
 }

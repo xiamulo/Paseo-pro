@@ -170,6 +170,11 @@ Single file, validated with `PersistedConfigSchema`.
 
 All fields are optional with sensible defaults.
 
+Alibaba Cloud NLS dictation credentials are client-local app settings, not daemon
+configuration. The app stores the user-entered AppKey, AccessKey ID, AccessKey
+Secret, and endpoint in its local storage and fetches short-lived NLS tokens from
+the app runtime.
+
 ---
 
 ## 3. Schedule

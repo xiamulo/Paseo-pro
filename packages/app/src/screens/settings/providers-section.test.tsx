@@ -202,7 +202,12 @@ const disabledCodexEntry: ProviderSnapshotEntry = {
 };
 
 function makeConfig(providers: MutableDaemonConfig["providers"] = {}): MutableDaemonConfig {
-  return { mcp: { injectIntoAgents: false }, providers, autoArchiveAfterMerge: false };
+  return {
+    mcp: { injectIntoAgents: false },
+    providers,
+    speech: { providers: {} },
+    autoArchiveAfterMerge: false,
+  };
 }
 
 function descendants(el: HTMLElement): HTMLElement[] {
