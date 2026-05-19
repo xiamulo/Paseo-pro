@@ -75,7 +75,7 @@ Stable tag pushes like `v0.1.0` trigger:
 
 Beta tags like `v0.1.1-beta.1` only trigger the GitHub APK workflow. They publish a GitHub prerelease APK for testing and do not submit to the stores.
 
-`android-v*` tags also trigger only the GitHub APK workflow — useful when you want to ship an APK without going through stores. Both workflows also support `workflow_dispatch`; the GitHub APK one takes an existing `tag` input so you can rebuild without cutting a new tag.
+`android-v*` tags also trigger only the GitHub APK workflow — useful when you want to ship an APK without going through stores. The GitHub APK workflow supports `workflow_dispatch` with an existing `tag` input so you can rebuild without cutting a new tag.
 
 The GitHub APK workflow restores npm, Gradle, Expo, and Metro caches, but it still
 runs on a fresh GitHub-hosted runner for each tag. The first build after a cache
@@ -93,12 +93,14 @@ can otherwise fail on GitHub runners with `OutOfMemoryError: Java heap space`.
 ```bash
 cd packages/app
 
-# List recent workflow runs
-npx eas workflow:runs --workflow release-mobile.yml --limit 10
+# Recent builds
+npx eas build:list --limit 10 --non-interactive --json | jq '.[] | {platform, status, appVersion, gitCommitHash}'
 
-# Inspect a run
-npx eas workflow:view <run-id>
-
-# Stream logs for a failed job
-npx eas workflow:logs <job-id> --non-interactive --all-steps
+# Inspect a build (the printed `Logs` URL opens the build's Expo dashboard page,
+# which has a Submissions section showing the auto-submit to the Play Store).
+npx eas build:view <build-id>
 ```
+
+The Play Console (Internal testing → Production tracks) is the final confirmation that the binary reached the store.
+
+See [docs/release.md](release.md) for the full mobile-build babysitting flow.

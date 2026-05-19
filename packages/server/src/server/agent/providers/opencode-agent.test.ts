@@ -34,7 +34,7 @@ function tmpCwd(): string {
   }
 }
 
-const TEST_MODEL = "opencode/big-pickle";
+const TEST_MODEL = "openrouter/~openai/gpt-mini-latest";
 
 interface TurnResult {
   events: AgentStreamEvent[];
@@ -92,8 +92,10 @@ function isBinaryInstalled(binary: string): boolean {
 }
 
 const hasOpenCode = isBinaryInstalled("opencode");
+const hasOpenRouterKey = Boolean(process.env.OPENROUTER_API_KEY);
+const canRunLiveOpenCodeTurns = hasOpenCode && hasOpenRouterKey;
 
-(hasOpenCode ? describe : describe.skip)("OpenCodeAgentClient", () => {
+(canRunLiveOpenCodeTurns ? describe : describe.skip)("OpenCodeAgentClient smoke tests", () => {
   const logger = createTestLogger();
   const buildConfig = (cwd: string): AgentSessionConfig => ({
     provider: "opencode",
