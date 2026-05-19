@@ -80,9 +80,26 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            package-lock.json
+            packages/app/android/**/*.gradle*
+            packages/app/android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Restore Expo and Metro caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/expo
+            ~/.cache/metro
+            ~/.expo
+            packages/app/.expo
+          key: ${{ runner.os }}-expo-metro-android-${{ hashFiles('package-lock.json', 'packages/app/app.config.js', 'packages/app/package.json', 'packages/app/index.ts') }}
+          restore-keys: |
+            ${{ runner.os }}-expo-metro-android-
 
       - name: Build workspace dependencies
         run: npm run build:workspace-deps --workspace=@getpaseo/app
@@ -103,6 +120,7 @@ jobs:
           cd packages/app/android
 
           ./gradlew :app:assembleRelease \
+            --build-cache \
             -x lint \
             -x lintVitalAnalyzeRelease \
             -x lintVitalRelease \

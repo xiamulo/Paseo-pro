@@ -77,6 +77,12 @@ Beta tags like `v0.1.1-beta.1` only trigger the GitHub APK workflow. They publis
 
 `android-v*` tags also trigger only the GitHub APK workflow — useful when you want to ship an APK without going through stores. Both workflows also support `workflow_dispatch`; the GitHub APK one takes an existing `tag` input so you can rebuild without cutting a new tag.
 
+The GitHub APK workflow restores npm, Gradle, Expo, and Metro caches, but it still
+runs on a fresh GitHub-hosted runner for each tag. The first build after a cache
+key changes may be close to a clean build; later builds mostly reuse downloaded
+Gradle artifacts and eligible Gradle build-cache outputs. Release JS bundling and
+native tasks whose inputs changed still run normally.
+
 ### Useful commands
 
 ```bash
