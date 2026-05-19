@@ -83,6 +83,11 @@ key changes may be close to a clean build; later builds mostly reuse downloaded
 Gradle artifacts and eligible Gradle build-cache outputs. Release JS bundling and
 native tasks whose inputs changed still run normally.
 
+The workflow also appends CI-only Gradle memory settings after Expo prebuild.
+Keep this in the workflow rather than `packages/app/android/gradle.properties`:
+`expo prebuild --clean` regenerates the Android project, and release dex merging
+can otherwise fail on GitHub runners with `OutOfMemoryError: Java heap space`.
+
 ### Useful commands
 
 ```bash

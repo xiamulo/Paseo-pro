@@ -112,6 +112,14 @@ jobs:
 
           APP_VARIANT=production npx expo prebuild --platform android --non-interactive --clean
 
+          cat >> android/gradle.properties <<'EOF'
+
+          # CI release builds need more heap for D8/R8 dex merging on GitHub runners.
+          org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError
+          org.gradle.workers.max=2
+          org.gradle.parallel=false
+          EOF
+
       - name: Build Android release APK
         id: artifact
         shell: bash
@@ -119,7 +127,7 @@ jobs:
           set -euo pipefail
           cd packages/app/android
 
-          ./gradlew :app:assembleRelease \
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease \
             --build-cache \
             -x lint \
             -x lintVitalAnalyzeRelease \
