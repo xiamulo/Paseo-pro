@@ -798,6 +798,11 @@ export class HostRuntimeController {
             connectionId: nextConnectionId,
             expectedProbeVersion: requestVersion,
           });
+        } else {
+          await this.switchToConnection({
+            connectionId: currentActiveConnectionId,
+            expectedProbeVersion: requestVersion,
+          });
         }
         this.switchCandidateConnectionId = null;
         this.switchCandidateHitCount = 0;

@@ -352,6 +352,32 @@ describe("processTimelineResponse", () => {
     expect(result.error).toBe(null);
   });
 
+  it("continues after catch-up pagination while newer history remains", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 3,
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentCursor: existingCursor,
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "after",
+        epoch: "epoch-1",
+        entries: [makeTimelineEntry(4, "next-1"), makeTimelineEntry(5, "next-2")],
+        hasNewer: true,
+      },
+    });
+
+    const catchUps = result.sideEffects.filter((effect) => effect.type === "catch_up");
+    expect(catchUps).toContainEqual({
+      type: "catch_up",
+      cursor: { epoch: "epoch-1", endSeq: 5 },
+    });
+  });
+
   it("keeps an active assistant head live when an incremental fetch accepts same-turn assistant text", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",

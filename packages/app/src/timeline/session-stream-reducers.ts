@@ -553,6 +553,13 @@ export function processTimelineResponse(
   const cursorChanged = timelineResult.cursorChanged;
   sideEffects.push(...timelineResult.sideEffects);
 
+  if (payload.direction === "after" && payload.hasNewer && cursorChanged && nextCursor) {
+    sideEffects.push({
+      type: "catch_up",
+      cursor: { epoch: nextCursor.epoch, endSeq: nextCursor.endSeq },
+    });
+  }
+
   // ------------------------------------------------------------------
   // Flush pending agent updates side effect
   // ------------------------------------------------------------------

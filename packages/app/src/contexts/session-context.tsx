@@ -744,32 +744,63 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     }, AUTHORITATIVE_REVALIDATION_DEBOUNCE_MS);
   }, [client, flushAuthoritativeRevalidation, isConnected]);
 
+  const requestFocusedAgentTimelineSync = useCallback(
+    (reason: "resume" | "reconnect") => {
+      if (!isNative) {
+        return;
+      }
+      const session = useSessionStore.getState().sessions[serverId];
+      const agentId = session?.focusedAgentId;
+      if (!agentId) {
+        return;
+      }
+      const cursor = session?.agentTimelineCursor.get(agentId);
+      const request = cursor
+        ? {
+            direction: "after" as const,
+            cursor: { epoch: cursor.epoch, seq: cursor.endSeq },
+            limit: TIMELINE_FETCH_PAGE_SIZE,
+            projection: "canonical" as const,
+          }
+        : {
+            direction: "tail" as const,
+            limit: TIMELINE_FETCH_PAGE_SIZE,
+            projection: "canonical" as const,
+          };
+
+      void client.fetchAgentTimeline(agentId, request).catch((error) => {
+        console.warn(
+          `[Session] failed to fetch ${request.direction} timeline on ${reason}`,
+          agentId,
+          error,
+        );
+      });
+    },
+    [client, serverId],
+  );
+
   const handleAppResumed = useCallback(
     (awayMs: number) => {
+      getHostRuntimeStore().ensureConnectedAll();
+      void getHostRuntimeStore()
+        .runProbeCycleNow(serverId)
+        .catch((error) => {
+          console.warn("[Session] failed to probe host connections on resume", serverId, error);
+        });
       scheduleAuthoritativeRevalidation();
-
-      if (isNative) {
-        const session = useSessionStore.getState().sessions[serverId];
-        const agentId = session?.focusedAgentId;
-        if (agentId) {
-          void client
-            .fetchAgentTimeline(agentId, {
-              direction: "tail",
-              limit: TIMELINE_FETCH_PAGE_SIZE,
-              projection: "canonical",
-            })
-            .catch((error) => {
-              console.warn("[Session] failed to fetch tail timeline on resume", agentId, error);
-            });
-        }
-      }
+      requestFocusedAgentTimelineSync("resume");
 
       if (awayMs < HISTORY_STALE_AFTER_MS) {
         return;
       }
       bumpHistorySyncGeneration(serverId);
     },
-    [bumpHistorySyncGeneration, client, scheduleAuthoritativeRevalidation, serverId],
+    [
+      bumpHistorySyncGeneration,
+      requestFocusedAgentTimelineSync,
+      scheduleAuthoritativeRevalidation,
+      serverId,
+    ],
   );
 
   // Client activity tracking (heartbeat, push token registration)
@@ -1151,8 +1182,9 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     wasConnectedRef.current = isConnected;
     if (!wasConnected && isConnected) {
       scheduleAuthoritativeRevalidation();
+      requestFocusedAgentTimelineSync("reconnect");
     }
-  }, [isConnected, scheduleAuthoritativeRevalidation]);
+  }, [isConnected, requestFocusedAgentTimelineSync, scheduleAuthoritativeRevalidation]);
 
   useEffect(() => {
     return () => {

@@ -620,6 +620,45 @@ describe("HostRuntimeController", () => {
     expect((initialClient as unknown as FakeDaemonClient | null)?.closeCalls).toBe(1);
   });
 
+  it("reconnects the active connection when its ping fails without an alternative", async () => {
+    const host = makeHost({
+      preferredConnectionId: "direct:lan:6767",
+      connections: [
+        {
+          id: "direct:lan:6767",
+          type: "directTcp",
+          endpoint: "lan:6767",
+        },
+      ],
+    });
+    const clients: FakeDaemonClient[] = [];
+    const latencies: Record<string, number | Error> = {
+      "direct:lan:6767": 15,
+    };
+    const controller = new HostRuntimeController({
+      host,
+      deps: makeDeps(latencies, clients),
+    });
+
+    await controller.start({ autoProbe: false });
+    expect(controller.getSnapshot().activeConnectionId).toBe("direct:lan:6767");
+    const initialClient = controller.getSnapshot().client;
+    expect(initialClient).toBeTruthy();
+
+    (initialClient as unknown as FakeDaemonClient).ping = async () => {
+      throw new Error("active ping failed");
+    };
+    latencies["direct:lan:6767"] = 21;
+    clearProbeBackoff(controller);
+    await controller.runProbeCycleNow();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.activeConnectionId).toBe("direct:lan:6767");
+    expect(snapshot.connectionStatus).toBe("online");
+    expect(snapshot.client).not.toBe(initialClient);
+    expect((initialClient as unknown as FakeDaemonClient | null)?.closeCalls).toBe(1);
+  });
+
   it("switches only after the faster alternative wins consecutive probes", async () => {
     const host = makeHost({ preferredConnectionId: "direct:lan:6767" });
     const clients: FakeDaemonClient[] = [];
