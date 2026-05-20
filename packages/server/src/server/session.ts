@@ -4816,9 +4816,12 @@ export class Session {
 
     try {
       const workspaceCwd = cwd?.trim();
+      const baseDirectory = workspaceCwd
+        ? expandTilde(workspaceCwd)
+        : (process.env.HOME ?? homedir());
       const entries = workspaceCwd
         ? await searchWorkspaceEntries({
-            cwd: expandTilde(workspaceCwd),
+            cwd: baseDirectory,
             query,
             limit,
             includeFiles,
@@ -4839,6 +4842,7 @@ export class Session {
         type: "directory_suggestions_response",
         payload: {
           directories,
+          baseDirectory,
           entries,
           error: null,
           requestId,

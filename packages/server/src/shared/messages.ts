@@ -3204,6 +3204,7 @@ export const DirectorySuggestionsResponseSchema = z.object({
   type: z.literal("directory_suggestions_response"),
   payload: z.object({
     directories: z.array(z.string()),
+    baseDirectory: z.string().optional(),
     entries: z
       .array(
         z.object({
