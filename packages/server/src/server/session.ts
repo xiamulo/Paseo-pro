@@ -115,6 +115,7 @@ import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
 } from "./agent/timeline-append.js";
+import { searchAgentTimelineRows, type AgentTimelineSearchMatch } from "./agent/agent-search.js";
 import {
   projectTimelineRows,
   selectTimelineWindowByProjectedLimit,
@@ -629,6 +630,18 @@ type PullRequestTimelinePayload = Extract<
   { type: "pull_request_timeline_response" }
 >["payload"];
 type PullRequestTimelinePayloadItem = PullRequestTimelinePayload["items"][number];
+type AgentSearchRequestMessage = Extract<SessionInboundMessage, { type: "agent.search.request" }>;
+type AgentSearchResponsePayload = Extract<
+  SessionOutboundMessage,
+  { type: "agent.search.response" }
+>["payload"];
+type AgentSearchResultEntry = AgentSearchResponsePayload["results"][number];
+
+interface CollectedAgentSearchMatch {
+  agent: AgentSnapshotPayload;
+  project: ProjectPlacementPayload | null;
+  match: AgentTimelineSearchMatch;
+}
 
 interface VoiceFeatureUnavailableContext {
   reasonCode: SpeechReadinessSnapshot["voiceFeature"]["reasonCode"];
@@ -772,7 +785,6 @@ export class Session {
     appVisible: boolean;
     appVisibilityChangedAt: Date;
   } | null = null;
-  private readonly MOBILE_BACKGROUND_STREAM_GRACE_MS = 60_000;
   private readonly terminalManager: TerminalManager | null;
   private readonly providerSnapshotManager: ProviderSnapshotManager | null;
   private unsubscribeProviderSnapshotEvents: (() => void) | null = null;
@@ -1298,13 +1310,6 @@ export class Session {
             });
         }
 
-        // Reduce bandwidth/CPU on mobile: only forward high-frequency agent stream events
-        // for the focused agent, with a short grace window while backgrounded.
-        // History catch-up is handled via pull-based `fetch_agent_timeline_request`.
-        if (this.shouldSkipAgentStreamForward(event.agentId)) {
-          return;
-        }
-
         const serializedEvent = serializeAgentStreamEvent(event.event);
         if (!serializedEvent) {
           return;
@@ -1349,21 +1354,6 @@ export class Session {
       },
       { replayState: false },
     );
-  }
-
-  private shouldSkipAgentStreamForward(agentId: string): boolean {
-    const activity = this.clientActivity;
-    if (activity?.deviceType !== "mobile") {
-      return false;
-    }
-    if (!activity.focusedAgentId || activity.focusedAgentId !== agentId) {
-      return true;
-    }
-    if (activity.appVisible) {
-      return false;
-    }
-    const hiddenForMs = Date.now() - activity.appVisibilityChangedAt.getTime();
-    return hiddenForMs >= this.MOBILE_BACKGROUND_STREAM_GRACE_MS;
   }
 
   private buildAgentStreamPayload(
@@ -1741,6 +1731,7 @@ export class Session {
     const promise =
       this.dispatchVoiceAndControlMessage(msg) ??
       this.dispatchAgentLifecycleMessage(msg) ??
+      this.dispatchAgentSearchMessage(msg) ??
       this.dispatchAgentConfigMessage(msg) ??
       this.dispatchCheckoutMessage(msg) ??
       this.dispatchWorkspaceAndProjectMessage(msg) ??
@@ -1861,6 +1852,15 @@ export class Session {
         return this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchAgentSearchMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "agent.search.request":
+        return this.handleAgentSearchRequest(msg);
       default:
         return undefined;
     }
@@ -6870,6 +6870,203 @@ export class Session {
           error: message,
           code,
         },
+      });
+    }
+  }
+
+  private emitAgentSearchResponse(payload: AgentSearchResponsePayload): void {
+    this.emit({
+      type: "agent.search.response",
+      payload,
+    });
+  }
+
+  private shouldIncludeAgentSearchCandidate(input: {
+    candidate: AgentSnapshotPayload;
+    request: AgentSearchRequestMessage;
+    project: ProjectPlacementPayload | null;
+    requestedAgentIds: ReadonlySet<string>;
+    hasRequestedAgentScope: boolean;
+    normalizedCwd: string | null;
+  }): boolean {
+    const {
+      candidate,
+      request,
+      project,
+      requestedAgentIds,
+      hasRequestedAgentScope,
+      normalizedCwd,
+    } = input;
+    if (hasRequestedAgentScope) {
+      return (
+        requestedAgentIds.has(candidate.id) &&
+        (request.includeArchived === true || !candidate.archivedAt)
+      );
+    }
+    if (!request.includeArchived && candidate.archivedAt) {
+      return false;
+    }
+    if (request.projectId) {
+      return project?.projectKey === request.projectId;
+    }
+    if (normalizedCwd) {
+      return normalizePersistedWorkspaceId(candidate.cwd) === normalizedCwd;
+    }
+    return true;
+  }
+
+  private async collectAgentSearchMatchesForCandidate(input: {
+    candidate: AgentSnapshotPayload;
+    project: ProjectPlacementPayload | null;
+    query: string;
+    perAgentSearchLimit: number;
+    hasRequestedAgentScope: boolean;
+  }): Promise<CollectedAgentSearchMatch[]> {
+    const { candidate, project, query, perAgentSearchLimit, hasRequestedAgentScope } = input;
+    let agent = candidate;
+    let rows = await this.agentManager.getTimelineRowsIfLoaded(candidate.id);
+    if (!rows && hasRequestedAgentScope) {
+      const snapshot = await ensureAgentLoaded(candidate.id, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
+      agent = await this.buildAgentPayload(snapshot);
+      rows = await this.agentManager.getTimelineRows(snapshot.id);
+    }
+    if (!rows) {
+      return [];
+    }
+    const liveAgent = this.agentManager.getAgent(candidate.id);
+    if (liveAgent) {
+      agent = await this.buildAgentPayload(liveAgent);
+    }
+    return searchAgentTimelineRows(rows, query, perAgentSearchLimit).map((match) => ({
+      agent,
+      project,
+      match,
+    }));
+  }
+
+  private compareAgentSearchMatches(
+    left: CollectedAgentSearchMatch,
+    right: CollectedAgentSearchMatch,
+  ): number {
+    const leftTimestamp = Date.parse(left.match.timestamp);
+    const rightTimestamp = Date.parse(right.match.timestamp);
+    const timestampDelta =
+      (Number.isNaN(rightTimestamp) ? 0 : rightTimestamp) -
+      (Number.isNaN(leftTimestamp) ? 0 : leftTimestamp);
+    if (timestampDelta !== 0) {
+      return timestampDelta;
+    }
+    return right.match.seq - left.match.seq;
+  }
+
+  private buildAgentSearchResults(
+    collectedMatches: CollectedAgentSearchMatch[],
+    limit: number,
+  ): { results: AgentSearchResultEntry[]; truncated: boolean } {
+    const sortedMatches = [...collectedMatches].sort((left, right) =>
+      this.compareAgentSearchMatches(left, right),
+    );
+    const results: AgentSearchResultEntry[] = [];
+    const resultByAgentId = new Map<string, AgentSearchResultEntry>();
+
+    for (const { agent, project, match } of sortedMatches.slice(0, limit)) {
+      const existing = resultByAgentId.get(agent.id);
+      if (existing) {
+        existing.matches.push(match);
+        continue;
+      }
+      const result = {
+        agent,
+        project,
+        matches: [match],
+      };
+      resultByAgentId.set(agent.id, result);
+      results.push(result);
+    }
+
+    return {
+      results,
+      truncated: sortedMatches.length > limit,
+    };
+  }
+
+  private async handleAgentSearchRequest(request: AgentSearchRequestMessage): Promise<void> {
+    const query = request.query.trim();
+    const limit = request.limit ?? 50;
+    const requestedAgentIds = new Set(
+      (request.agentIds ?? []).map((agentId) => agentId.trim()).filter(Boolean),
+    );
+    const hasRequestedAgentScope = request.agentIds !== undefined;
+    if (!query) {
+      this.emitAgentSearchResponse({
+        requestId: request.requestId,
+        query,
+        results: [],
+        truncated: false,
+        error: null,
+      });
+      return;
+    }
+
+    try {
+      const candidates = await this.listAgentPayloads();
+      const normalizedCwd = request.cwd ? normalizePersistedWorkspaceId(request.cwd) : null;
+      const collectedMatches: CollectedAgentSearchMatch[] = [];
+      const perAgentSearchLimit = limit + 1;
+
+      for (const candidate of candidates) {
+        const project = await this.buildProjectPlacementForCwd(candidate.cwd);
+        if (
+          !this.shouldIncludeAgentSearchCandidate({
+            candidate,
+            request,
+            project,
+            requestedAgentIds,
+            hasRequestedAgentScope,
+            normalizedCwd,
+          })
+        ) {
+          continue;
+        }
+
+        try {
+          collectedMatches.push(
+            ...(await this.collectAgentSearchMatchesForCandidate({
+              candidate,
+              project,
+              query,
+              perAgentSearchLimit,
+              hasRequestedAgentScope,
+            })),
+          );
+        } catch (error) {
+          this.sessionLogger.warn(
+            { err: error, agentId: candidate.id },
+            "Skipping agent during search",
+          );
+        }
+      }
+
+      const { results, truncated } = this.buildAgentSearchResults(collectedMatches, limit);
+      this.emitAgentSearchResponse({
+        requestId: request.requestId,
+        query,
+        results,
+        truncated,
+        error: null,
+      });
+    } catch (error) {
+      this.sessionLogger.error({ err: error }, "Failed to handle agent.search.request");
+      this.emitAgentSearchResponse({
+        requestId: request.requestId,
+        query,
+        results: [],
+        truncated: false,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }

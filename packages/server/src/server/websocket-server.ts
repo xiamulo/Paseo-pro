@@ -1081,6 +1081,8 @@ export class VoiceAssistantWebSocketServer {
         checkoutGithubSetAutoMerge: true,
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         daemonStatusRpc: true,
+        // COMPAT(agentSearch): added in v0.1.78, remove gate after 2026-11-20.
+        agentSearch: true,
       },
     };
   }

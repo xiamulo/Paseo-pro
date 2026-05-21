@@ -473,6 +473,16 @@ export type FetchRecentProviderSessionsOptions = Omit<
   requestId?: string;
 };
 export type FetchRecentProviderSessionEntry = FetchRecentProviderSessionsPayload["entries"][number];
+type AgentSearchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "agent.search.response" }
+>["payload"];
+type AgentSearchRequest = Extract<SessionInboundMessage, { type: "agent.search.request" }>;
+export type AgentSearchOptions = Omit<AgentSearchRequest, "type" | "requestId"> & {
+  requestId?: string;
+};
+export type AgentSearchResult = AgentSearchPayload["results"][number];
+export type AgentSearchMatch = AgentSearchResult["matches"][number];
 type FetchWorkspacesPayload = Extract<
   SessionOutboundMessage,
   { type: "fetch_workspaces_response" }
@@ -1749,6 +1759,22 @@ export class DaemonClient {
       },
       responseType: "workspace_setup_status_response",
       timeout: 10000,
+    });
+  }
+
+  async searchAgents(options: AgentSearchOptions): Promise<AgentSearchPayload> {
+    return this.sendNamespacedCorrelatedSessionRequest<"agent.search.response">({
+      requestId: options.requestId,
+      message: {
+        type: "agent.search.request",
+        query: options.query,
+        ...(options.agentIds !== undefined ? { agentIds: options.agentIds } : {}),
+        ...(options.projectId ? { projectId: options.projectId } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        ...(options.includeArchived ? { includeArchived: options.includeArchived } : {}),
+        ...(options.limit ? { limit: options.limit } : {}),
+      },
+      timeout: 30000,
     });
   }
 

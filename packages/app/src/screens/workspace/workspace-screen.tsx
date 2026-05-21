@@ -27,6 +27,7 @@ import {
   Import as ImportIcon,
   PanelRight,
   RotateCw,
+  Search,
   Settings,
   SquarePen,
   SquareTerminal,
@@ -59,6 +60,7 @@ import { WorkspaceGitActions } from "@/git/workspace-actions";
 import { WorkspaceOpenInEditorButton } from "@/screens/workspace/workspace-open-in-editor-button";
 import { WorkspaceScriptsButton } from "@/screens/workspace/workspace-scripts-button";
 import { WorkspaceImportSheet } from "@/screens/workspace/workspace-import-sheet";
+import { AgentSearchSheet } from "@/screens/workspace/agent-search-sheet";
 import { ExplorerSidebarAnimationProvider } from "@/contexts/explorer-sidebar-animation-context";
 import { useToast } from "@/contexts/toast-context";
 import { useExplorerOpenGesture } from "@/hooks/use-explorer-open-gesture";
@@ -178,6 +180,7 @@ const ThemedEllipsisVertical = withUnistyles(EllipsisVertical);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedRotateCw = withUnistyles(RotateCw);
+const ThemedSearch = withUnistyles(Search);
 const ThemedArrowLeftToLine = withUnistyles(ArrowLeftToLine);
 const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
 const ThemedCopyX = withUnistyles(CopyX);
@@ -201,6 +204,7 @@ const MENU_NEW_BROWSER_ICON = <ThemedGlobe size={16} uniProps={mutedColorMapping
 const MENU_IMPORT_ICON = <ThemedImport size={16} uniProps={mutedColorMapping} />;
 const MENU_COPY_ICON = <ThemedCopy size={16} uniProps={mutedColorMapping} />;
 const MENU_SETTINGS_ICON = <ThemedSettings size={16} uniProps={mutedColorMapping} />;
+const SEARCH_TOOLTIP_KEYS: ShortcutKey[] = [];
 const GATED_WORKSPACE_HEADER_LEFT = <SidebarMenuToggle />;
 
 interface WorkspaceScreenProps {
@@ -936,6 +940,7 @@ interface WorkspaceHeaderTitleBarProps {
   normalizedServerId: string;
   normalizedWorkspaceId: string;
   showWorkspaceSetup: boolean;
+  showAgentSearch: boolean;
   showCreateBrowserTab: boolean;
   isMobile: boolean;
   createTerminalDisabled: boolean;
@@ -949,6 +954,7 @@ interface WorkspaceHeaderTitleBarProps {
   onCreateDraftTab: () => void;
   onCreateTerminal: () => void;
   onCreateBrowser: () => void;
+  onOpenAgentSearch: () => void;
   onOpenImportSheet: () => void;
   onCopyWorkspacePath: () => void;
   onCopyBranchName: () => void;
@@ -965,6 +971,7 @@ function WorkspaceHeaderTitleBar({
   normalizedServerId,
   normalizedWorkspaceId,
   showWorkspaceSetup,
+  showAgentSearch,
   showCreateBrowserTab,
   isMobile,
   createTerminalDisabled,
@@ -978,6 +985,7 @@ function WorkspaceHeaderTitleBar({
   onCreateDraftTab,
   onCreateTerminal,
   onCreateBrowser,
+  onOpenAgentSearch,
   onOpenImportSheet,
   onCopyWorkspacePath,
   onCopyBranchName,
@@ -1009,6 +1017,24 @@ function WorkspaceHeaderTitleBar({
           ) : null}
         </View>
       )}
+      {showAgentSearch ? (
+        <HeaderToggleButton
+          testID="workspace-agent-search"
+          onPress={onOpenAgentSearch}
+          tooltipLabel="Search agents"
+          tooltipKeys={SEARCH_TOOLTIP_KEYS}
+          tooltipSide="bottom"
+          style={styles.headerActionButton}
+          accessible
+          accessibilityRole="button"
+          accessibilityLabel="Search agents"
+        >
+          {({ hovered }) => {
+            const colorMapping = hovered ? foregroundColorMapping : mutedColorMapping;
+            return <ThemedSearch size={16} uniProps={colorMapping} />;
+          }}
+        </HeaderToggleButton>
+      ) : null}
       <WorkspaceHeaderMenu
         normalizedWorkspaceId={normalizedWorkspaceId}
         currentBranchName={currentBranchName}
@@ -1259,6 +1285,16 @@ function useResolvedWorkspaceRouteState(input: {
   );
 }
 
+function useAgentSearchEnabled(serverId: string): boolean {
+  return useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentSearch === true,
+  );
+}
+
+function getWorkspaceProjectId(workspace: WorkspaceDescriptor | null | undefined): string | null {
+  return workspace?.projectId ?? null;
+}
+
 function WorkspaceScreenGateFrame({ children }: { children: ReactNode }) {
   return (
     <>
@@ -1480,12 +1516,19 @@ function WorkspaceScreenContent({
   const { workspaceDirectory, isMissingWorkspaceExecutionAuthority } =
     resolveWorkspaceAuthorityState(workspaceAuthority, workspaceDescriptor);
   const [isImportSheetVisible, setIsImportSheetVisible] = useState(false);
+  const [isAgentSearchVisible, setIsAgentSearchVisible] = useState(false);
   const canOpenImportSheet = [client, isConnected, workspaceDirectory].every(Boolean);
   const openImportSheet = useCallback(() => {
     setIsImportSheetVisible(true);
   }, []);
   const closeImportSheet = useCallback(() => {
     setIsImportSheetVisible(false);
+  }, []);
+  const openAgentSearch = useCallback(() => {
+    setIsAgentSearchVisible(true);
+  }, []);
+  const closeAgentSearch = useCallback(() => {
+    setIsAgentSearchVisible(false);
   }, []);
 
   // Warm the global provider snapshot so the model picker is ready when opened.
@@ -1574,6 +1617,8 @@ function WorkspaceScreenContent({
   const hasHydratedAgents = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.hasHydratedAgents ?? false,
   );
+  const agentSearchEnabled = useAgentSearchEnabled(normalizedServerId);
+  const workspaceProjectId = getWorkspaceProjectId(workspaceDescriptor);
   const workspaceRouteState = useResolvedWorkspaceRouteState({
     serverId: normalizedServerId,
     workspace: workspaceDescriptor,
@@ -1688,6 +1733,18 @@ function WorkspaceScreenContent({
     () => (workspaceLayout ? collectAllTabs(workspaceLayout.root) : EMPTY_UI_TABS),
     [workspaceLayout],
   );
+  const openAgentSearchIds = useMemo(() => {
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (const tab of uiTabs) {
+      if (tab.target.kind !== "agent" || seen.has(tab.target.agentId)) {
+        continue;
+      }
+      seen.add(tab.target.agentId);
+      ids.push(tab.target.agentId);
+    }
+    return ids;
+  }, [uiTabs]);
   useSyncWorkspaceActiveBrowser({ workspaceLayout, isRouteFocused });
   const openWorkspaceTabInBackground = useWorkspaceLayoutStore(
     (state) => state.openTabInBackground,
@@ -3231,6 +3288,7 @@ function WorkspaceScreenContent({
                         normalizedServerId={normalizedServerId}
                         normalizedWorkspaceId={normalizedWorkspaceId}
                         showWorkspaceSetup={showWorkspaceSetup}
+                        showAgentSearch={agentSearchEnabled}
                         showCreateBrowserTab={showCreateBrowserTab}
                         isMobile={isMobile}
                         createTerminalDisabled={createTerminalDisabled}
@@ -3244,6 +3302,7 @@ function WorkspaceScreenContent({
                         onCreateDraftTab={handleCreateDraftTab}
                         onCreateTerminal={handleCreateTerminal}
                         onCreateBrowser={handleCreateBrowserTab}
+                        onOpenAgentSearch={openAgentSearch}
                         onOpenImportSheet={openImportSheet}
                         onCopyWorkspacePath={handleCopyWorkspacePath}
                         onCopyBranchName={handleCopyBranchName}
@@ -3336,6 +3395,17 @@ function WorkspaceScreenContent({
             workspaceDirectory={workspaceDirectory}
             onClose={closeImportSheet}
             onImportedAgent={handleImportedAgent}
+          />
+          <AgentSearchSheet
+            visible={isAgentSearchVisible}
+            client={client}
+            connected={isConnected}
+            serverId={normalizedServerId}
+            agentIds={openAgentSearchIds}
+            projectId={workspaceProjectId}
+            cwd={workspaceDirectory}
+            onClose={closeAgentSearch}
+            onOpenAgent={handleImportedAgent}
           />
         </View>
       </WorkspaceFocusProvider>

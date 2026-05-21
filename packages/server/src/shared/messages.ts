@@ -971,6 +971,17 @@ export const FetchRecentProviderSessionsRequestMessageSchema = z.object({
   limit: z.number().int().positive().max(200).optional(),
 });
 
+export const AgentSearchRequestMessageSchema = z.object({
+  type: z.literal("agent.search.request"),
+  requestId: z.string(),
+  query: z.string(),
+  agentIds: z.array(z.string().min(1)).optional(),
+  projectId: z.string().optional(),
+  cwd: z.string().optional(),
+  includeArchived: z.boolean().optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
 export const FetchAgentRequestMessageSchema = z.object({
   type: z.literal("fetch_agent_request"),
   requestId: z.string(),
@@ -1782,6 +1793,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   FetchAgentsRequestMessageSchema,
   FetchAgentHistoryRequestMessageSchema,
   FetchRecentProviderSessionsRequestMessageSchema,
+  AgentSearchRequestMessageSchema,
   FetchWorkspacesRequestMessageSchema,
   FetchAgentRequestMessageSchema,
   DeleteAgentRequestMessageSchema,
@@ -2058,6 +2070,8 @@ export const ServerInfoStatusPayloadSchema = z
         checkoutGithubSetAutoMerge: z.boolean().optional(),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         daemonStatusRpc: z.boolean().optional(),
+        // COMPAT(agentSearch): added in v0.1.78, remove gate after 2026-11-20.
+        agentSearch: z.boolean().optional(),
       })
       .optional(),
   })
@@ -2407,6 +2421,39 @@ export const FetchRecentProviderSessionsResponseMessageSchema = z.object({
     requestId: z.string(),
     entries: z.array(RecentProviderSessionDescriptorPayloadSchema),
     filteredAlreadyImportedCount: z.number().int().nonnegative().optional(),
+  }),
+});
+
+const AgentSearchMatchKindSchema = z.enum([
+  "user_message",
+  "assistant_message",
+  "reasoning",
+  "tool_call",
+  "todo",
+  "error",
+]);
+
+const AgentSearchMatchSchema = z.object({
+  kind: AgentSearchMatchKindSchema,
+  snippet: z.string(),
+  timestamp: z.string(),
+  seq: z.number().int().nonnegative(),
+});
+
+const AgentSearchResultSchema = z.object({
+  agent: AgentSnapshotPayloadSchema,
+  project: ProjectPlacementPayloadSchema.nullable().optional(),
+  matches: z.array(AgentSearchMatchSchema),
+});
+
+export const AgentSearchResponseMessageSchema = z.object({
+  type: z.literal("agent.search.response"),
+  payload: z.object({
+    requestId: z.string(),
+    query: z.string(),
+    results: z.array(AgentSearchResultSchema),
+    truncated: z.boolean(),
+    error: z.string().nullable(),
   }),
 });
 
@@ -3546,6 +3593,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   FetchAgentsResponseMessageSchema,
   FetchAgentHistoryResponseMessageSchema,
   FetchRecentProviderSessionsResponseMessageSchema,
+  AgentSearchResponseMessageSchema,
   FetchWorkspacesResponseMessageSchema,
   OpenProjectResponseMessageSchema,
   StartWorkspaceScriptResponseMessageSchema,

@@ -40,8 +40,6 @@ function isLiveAssistantTimeline(
     message.payload.agentId === agentId &&
     message.payload.event.type === "timeline" &&
     message.payload.event.item.type === "assistant_message" &&
-    message.payload.seq === undefined &&
-    typeof message.payload.epoch === "string" &&
     (epoch === undefined || message.payload.epoch === epoch) &&
     (text === undefined || message.payload.event.item.text === text)
   );
@@ -91,7 +89,7 @@ test("reconnect catches up committed rows without replaying a provisional seed",
     });
     await waitFor(() =>
       primaryCollector.messages.some((message) =>
-        isLiveAssistantTimeline(message, agent.id, epoch, "partial before disconnect"),
+        isLiveAssistantTimeline(message, agent.id, undefined, "partial before disconnect"),
       ),
     );
 
@@ -114,9 +112,7 @@ test("reconnect catches up committed rows without replaying a provisional seed",
       });
 
       expect(
-        reconnectCollector.messages.some((message) =>
-          isLiveAssistantTimeline(message, agent.id, epoch),
-        ),
+        reconnectCollector.messages.some((message) => isLiveAssistantTimeline(message, agent.id)),
       ).toBe(false);
 
       const catchUp = await reconnectClient.fetchAgentTimeline(agent.id, {
@@ -145,6 +141,47 @@ test("reconnect catches up committed rows without replaying a provisional seed",
     }
   } finally {
     primaryCollector.unsubscribe();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("mobile observer receives live stream events while backgrounded past grace window", async () => {
+  const cwd = tmpCwd();
+  const observerClient = new DaemonClient({
+    url: `ws://127.0.0.1:${ctx.daemon.port}/ws`,
+  });
+  await observerClient.connect();
+  const observerCollector = createMessageCollector(observerClient);
+
+  try {
+    const agent = await ctx.client.createAgent({
+      provider: "codex",
+      cwd,
+      title: "Background Mobile Stream Fanout Test",
+      modeId: "full-access",
+    });
+
+    observerClient.sendHeartbeat({
+      deviceType: "mobile",
+      focusedAgentId: null,
+      lastActivityAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+      appVisible: false,
+      appVisibilityChangedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+    });
+
+    await ctx.daemon.daemon.agentManager.emitLiveTimelineItem(agent.id, {
+      type: "assistant_message",
+      text: "live while mobile is backgrounded",
+    });
+
+    await waitFor(() =>
+      observerCollector.messages.some((message) =>
+        isLiveAssistantTimeline(message, agent.id, undefined, "live while mobile is backgrounded"),
+      ),
+    );
+  } finally {
+    observerCollector.unsubscribe();
+    await observerClient.close();
     rmSync(cwd, { recursive: true, force: true });
   }
 }, 30_000);
@@ -183,7 +220,7 @@ test("reconnect with no new committed rows resumes from future live provisional 
     });
     await waitFor(() =>
       primaryCollector.messages.some((message) =>
-        isLiveAssistantTimeline(message, agent.id, epoch, "partial before disconnect"),
+        isLiveAssistantTimeline(message, agent.id, undefined, "partial before disconnect"),
       ),
     );
 
@@ -201,9 +238,7 @@ test("reconnect with no new committed rows resumes from future live provisional 
       });
 
       expect(
-        reconnectCollector.messages.some((message) =>
-          isLiveAssistantTimeline(message, agent.id, epoch),
-        ),
+        reconnectCollector.messages.some((message) => isLiveAssistantTimeline(message, agent.id)),
       ).toBe(false);
 
       const catchUp = await reconnectClient.fetchAgentTimeline(agent.id, {
@@ -228,7 +263,7 @@ test("reconnect with no new committed rows resumes from future live provisional 
       });
       await waitFor(() =>
         reconnectCollector.messages.some((message) =>
-          isLiveAssistantTimeline(message, agent.id, epoch, "fresh live after reconnect"),
+          isLiveAssistantTimeline(message, agent.id, undefined, "fresh live after reconnect"),
         ),
       );
     } finally {

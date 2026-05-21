@@ -786,6 +786,16 @@ export class AgentManager {
     return this.timelineStore.getRows(id);
   }
 
+  async getTimelineRowsIfLoaded(id: string): Promise<AgentTimelineRow[] | null> {
+    if (this.agents.has(id)) {
+      return await this.getTimelineRows(id);
+    }
+    if (this.durableTimelineStore) {
+      return await this.durableTimelineStore.getCommittedRows(id);
+    }
+    return null;
+  }
+
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     this.requireAgent(id);
     return this.timelineStore.fetch(id, options);
