@@ -3481,6 +3481,7 @@ function WorkspaceScreenContent({
             client={client}
             connected={isConnected}
             serverId={normalizedServerId}
+            supported={agentSearchEnabled}
             agentIds={openAgentSearchIds}
             projectId={workspaceProjectId}
             cwd={workspaceDirectory}

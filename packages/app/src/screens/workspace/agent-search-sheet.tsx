@@ -17,6 +17,7 @@ interface AgentSearchSheetProps {
   connected: boolean;
   visible: boolean;
   serverId: string;
+  supported: boolean;
   agentIds?: readonly string[];
   projectId?: string | null;
   cwd?: string | null;
@@ -174,6 +175,7 @@ export function AgentSearchSheet({
   connected,
   visible,
   serverId,
+  supported,
   agentIds,
   projectId,
   cwd,
@@ -184,7 +186,7 @@ export function AgentSearchSheet({
   const [searchResetKey, bumpSearchResetKey] = useReducer((key: number) => key + 1, 0);
   const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
   const canSearch = debouncedQuery.length >= MIN_QUERY_LENGTH;
-  const enabled = visible && connected && Boolean(client) && canSearch;
+  const enabled = visible && supported && connected && Boolean(client) && canSearch;
   const agentIdsKey = useMemo(() => (agentIds ?? []).join("\0"), [agentIds]);
 
   const searchQuery = useQuery({
@@ -229,17 +231,21 @@ export function AgentSearchSheet({
     () => ({
       title: "Search agents",
       leading: <ThemedSearch size={18} uniProps={foregroundColorMapping} />,
-      search: {
-        value: query,
-        initialValue: query,
-        resetKey: `agent-search-${searchResetKey}`,
-        onChange: setQuery,
-        placeholder: "Search conversations",
-        autoFocus: true,
-        testID: "agent-search-input",
-      },
+      ...(supported
+        ? {
+            search: {
+              value: query,
+              initialValue: query,
+              resetKey: `agent-search-${searchResetKey}`,
+              onChange: setQuery,
+              placeholder: "Search conversations",
+              autoFocus: true,
+              testID: "agent-search-input",
+            },
+          }
+        : {}),
     }),
-    [query, searchResetKey],
+    [query, searchResetKey, supported],
   );
 
   const rows = useMemo(
@@ -250,6 +256,9 @@ export function AgentSearchSheet({
   const stateText = useMemo(() => {
     if (!connected) {
       return "Host is not connected";
+    }
+    if (!supported) {
+      return "Update the host to use agent search";
     }
     if (query.trim().length === 0) {
       return "Search messages, reasoning, tool output, and errors";
@@ -279,6 +288,7 @@ export function AgentSearchSheet({
     searchQuery.error,
     searchQuery.isError,
     searchQuery.isFetching,
+    supported,
   ]);
 
   return (
