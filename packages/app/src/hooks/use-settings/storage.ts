@@ -9,18 +9,22 @@ const LEGACY_SETTINGS_KEY = "@paseo:settings";
 export type SendBehavior = "interrupt" | "queue";
 export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
+export type AppLanguage = "zh-CN" | "en";
 
 const VALID_THEMES = new Set<string>([...Object.keys(THEME_TO_UNISTYLES), "auto"]);
 const VALID_SERVICE_URL_BEHAVIORS = new Set<ServiceUrlBehavior>(["ask", "in-app", "external"]);
+const VALID_APP_LANGUAGES = new Set<AppLanguage>(["zh-CN", "en"]);
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
 
 export interface AppSettings {
   theme: ThemeName | "auto";
+  language: AppLanguage;
   sendBehavior: SendBehavior;
   serviceUrlBehavior: ServiceUrlBehavior;
   terminalScrollbackLines: number;
+  androidBackgroundKeepalive: boolean;
 }
 
 export interface Settings extends AppSettings {
@@ -30,9 +34,11 @@ export interface Settings extends AppSettings {
 
 export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   theme: "auto",
-  sendBehavior: "interrupt",
+  language: "zh-CN",
+  sendBehavior: "queue",
   serviceUrlBehavior: "ask",
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
+  androidBackgroundKeepalive: true,
 };
 
 export const DEFAULT_APP_SETTINGS: Settings = {
@@ -134,6 +140,9 @@ function pickAppSettings(stored: Partial<AppSettings>): Partial<AppSettings> {
   if (stored.sendBehavior === "interrupt" || stored.sendBehavior === "queue") {
     result.sendBehavior = stored.sendBehavior;
   }
+  if (typeof stored.language === "string" && VALID_APP_LANGUAGES.has(stored.language)) {
+    result.language = stored.language;
+  }
   if (
     typeof stored.serviceUrlBehavior === "string" &&
     VALID_SERVICE_URL_BEHAVIORS.has(stored.serviceUrlBehavior)
@@ -143,6 +152,9 @@ function pickAppSettings(stored: Partial<AppSettings>): Partial<AppSettings> {
   const terminalScrollbackLines = parseTerminalScrollbackLines(stored.terminalScrollbackLines);
   if (terminalScrollbackLines !== null) {
     result.terminalScrollbackLines = terminalScrollbackLines;
+  }
+  if (typeof stored.androidBackgroundKeepalive === "boolean") {
+    result.androidBackgroundKeepalive = stored.androidBackgroundKeepalive;
   }
   return result;
 }

@@ -20,7 +20,11 @@ import {
   planTimelineCatchUpAfter,
   planTimelineCatchUpFollowUp,
 } from "@/timeline/timeline-sync-plan";
-import type { AgentAttachment, SessionOutboundMessage } from "@getpaseo/protocol/messages";
+import type {
+  AgentAttachment,
+  AgentInputQueueItem,
+  SessionOutboundMessage,
+} from "@getpaseo/protocol/messages";
 import { parseServerInfoStatusPayload } from "@getpaseo/protocol/messages";
 import {
   buildAgentAttentionNotificationPayload,
@@ -57,7 +61,7 @@ import { encodeImages } from "@/utils/encode-images";
 import { derivePendingPermissionKey, normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { resolveProjectPlacement } from "@/utils/project-placement";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
-import type { AttachmentMetadata } from "@/attachments/types";
+import type { AttachmentMetadata, ComposerAttachment } from "@/attachments/types";
 import { splitComposerAttachmentsForSubmit } from "@/composer/attachments/submit";
 import { reconcilePreviousAgentStatuses } from "@/contexts/session-status-tracking";
 import { patchWorkspaceScripts } from "@/contexts/session-workspace-scripts";
@@ -184,6 +188,18 @@ type WorkspaceSetupProgressPayload = Extract<
 
 const getAgentIdFromUpdate = (update: AgentUpdatePayload): string =>
   update.kind === "remove" ? update.agentId : update.agent.id;
+
+function queuedComposerMessageFromDaemonItem(item: AgentInputQueueItem): {
+  id: string;
+  text: string;
+  attachments: ComposerAttachment[];
+} {
+  return {
+    id: item.id,
+    text: item.text,
+    attachments: Array.isArray(item.clientState) ? (item.clientState as ComposerAttachment[]) : [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Module-level pending agent updates buffer (scoped by serverId)
@@ -656,8 +672,9 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       });
 
       const prevStatus = previousAgentStatusRef.current.get(agent.id);
-      if (prevStatus === "running" && agent.status !== "running") {
-        const session = useSessionStore.getState().sessions[serverId];
+      const session = useSessionStore.getState().sessions[serverId];
+      const daemonInputQueueSupported = session?.serverInfo?.features?.agentInputQueue === true;
+      if (prevStatus === "running" && agent.status !== "running" && !daemonInputQueueSupported) {
         const queue = session?.queuedMessages.get(agent.id);
         if (queue && queue.length > 0) {
           const [next, ...rest] = queue;
@@ -1269,6 +1286,20 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       // on status changes, which is sufficient for sorting and display purposes.
     });
 
+    const unsubAgentInputQueue = client.on("agent.input_queue.update", (message) => {
+      if (message.type !== "agent.input_queue.update") return;
+      setQueuedMessages(serverId, (prev) => {
+        const next = new Map(prev);
+        const items = message.payload.items.map(queuedComposerMessageFromDaemonItem);
+        if (items.length === 0) {
+          next.delete(message.payload.agentId);
+        } else {
+          next.set(message.payload.agentId, items);
+        }
+        return next;
+      });
+    });
+
     const unsubAgentTimeline = client.on("fetch_agent_timeline_response", (message) => {
       if (message.type !== "fetch_agent_timeline_response") return;
       agentStreamReducerQueue.flushAgent(message.payload.agentId);
@@ -1643,6 +1674,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     return () => {
       unsubAgentUpdate();
       unsubAgentStream();
+      unsubAgentInputQueue();
       unsubAgentTimeline();
       unsubWorkspaceUpdate();
       unsubScriptStatusUpdate();
@@ -1670,6 +1702,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     setAgentStreamTail,
     setAgentStreamHead,
     setAgentStreamState,
+    setQueuedMessages,
     clearAgentStreamHead,
     setAgentTimelineCursor,
     setInitializingAgents,

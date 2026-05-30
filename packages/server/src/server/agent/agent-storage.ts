@@ -4,10 +4,11 @@ import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
 
-import { AgentFeatureSchema, AgentStatusSchema } from "../messages.js";
+import { AgentFeatureSchema, AgentInputQueueItemSchema, AgentStatusSchema } from "../messages.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
+import type { AgentInputQueueItem } from "../messages.js";
 
 const SERIALIZABLE_CONFIG_SCHEMA = z
   .object({
@@ -63,6 +64,7 @@ const STORED_AGENT_SCHEMA = z.object({
   attentionTimestamp: z.string().nullable().optional(),
   internal: z.boolean().optional(),
   archivedAt: z.string().nullable().optional(),
+  inputQueue: z.array(AgentInputQueueItemSchema).optional(),
 });
 
 export type SerializableAgentConfig = Pick<
@@ -109,6 +111,58 @@ export class AgentStorage {
   async get(agentId: string): Promise<StoredAgentRecord | null> {
     await this.load();
     return this.cache.get(agentId) ?? null;
+  }
+
+  async getInputQueue(agentId: string): Promise<AgentInputQueueItem[]> {
+    await this.load();
+    await this.waitForPendingWrite(agentId);
+    const record = this.cache.get(agentId) ?? null;
+    if (!record) {
+      throw new Error(`Agent ${agentId} not found`);
+    }
+    return [...(record.inputQueue ?? [])];
+  }
+
+  async updateInputQueue(
+    agentId: string,
+    updater: (
+      items: AgentInputQueueItem[],
+    ) => AgentInputQueueItem[] | Promise<AgentInputQueueItem[]>,
+  ): Promise<AgentInputQueueItem[]> {
+    await this.load();
+    let result: AgentInputQueueItem[] = [];
+    const previous = (this.pendingWrites.get(agentId) ?? Promise.resolve()).catch(() => undefined);
+    const next = previous.then(async () => {
+      if (this.deleting.has(agentId)) {
+        return undefined;
+      }
+      const record = this.cache.get(agentId) ?? null;
+      if (!record) {
+        throw new Error(`Agent ${agentId} not found`);
+      }
+      const items = await updater([...(record.inputQueue ?? [])]);
+      result = [...items];
+      await this.writeRecord({
+        ...record,
+        inputQueue: items,
+        updatedAt: new Date().toISOString(),
+      });
+      return undefined;
+    });
+
+    const tracked = next.finally(() => {
+      if (this.pendingWrites.get(agentId) === tracked) {
+        this.pendingWrites.delete(agentId);
+      }
+    });
+
+    this.pendingWrites.set(agentId, tracked);
+    await tracked;
+    return result;
+  }
+
+  async setInputQueue(agentId: string, items: AgentInputQueueItem[]): Promise<void> {
+    await this.updateInputQueue(agentId, () => items);
   }
 
   async upsert(record: StoredAgentRecord): Promise<void> {
@@ -216,6 +270,9 @@ export class AgentStorage {
     // would wipe it during normal persistence (including on daemon restart).
     if (existing && existing.archivedAt !== undefined) {
       record.archivedAt = existing.archivedAt;
+    }
+    if (existing && existing.inputQueue !== undefined) {
+      record.inputQueue = existing.inputQueue;
     }
     await this.upsert(record);
   }

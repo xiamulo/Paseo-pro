@@ -22,6 +22,7 @@ import {
   parseTerminalScrollbackLines,
   saveAppSettings as saveAppSettingsPure,
   type AppSettings,
+  type AppLanguage,
   type DesktopSettingsBridge,
   type KeyValueStorage,
   type ReleaseChannel,
@@ -42,6 +43,7 @@ export {
 };
 export type {
   AppSettings,
+  AppLanguage,
   DesktopSettingsBridge,
   KeyValueStorage,
   ReleaseChannel,
@@ -127,6 +129,9 @@ export function useSettings(): UseSettingsReturn {
       if (updates.theme !== undefined) {
         appUpdates.theme = updates.theme;
       }
+      if (updates.language !== undefined) {
+        appUpdates.language = updates.language;
+      }
       if (updates.sendBehavior !== undefined) {
         appUpdates.sendBehavior = updates.sendBehavior;
       }
@@ -135,6 +140,9 @@ export function useSettings(): UseSettingsReturn {
       }
       if (updates.terminalScrollbackLines !== undefined) {
         appUpdates.terminalScrollbackLines = updates.terminalScrollbackLines;
+      }
+      if (updates.androidBackgroundKeepalive !== undefined) {
+        appUpdates.androidBackgroundKeepalive = updates.androidBackgroundKeepalive;
       }
       const promises: Promise<void>[] = [];
       if (Object.keys(appUpdates).length > 0) {

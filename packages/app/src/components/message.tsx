@@ -71,6 +71,12 @@ import { resolveToolCallIcon } from "@/utils/tool-call-icon";
 import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-list";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
@@ -128,6 +134,10 @@ interface UserMessageProps {
 
 const MessageOuterSpacingContext = createContext(false);
 
+function isCopyableText(text: string): boolean {
+  return text.trim().length > 0;
+}
+
 export function MessageOuterSpacingProvider({
   disableOuterSpacing,
   children,
@@ -175,6 +185,7 @@ const markdownStyleMapping = (theme: Theme): Partial<MarkdownWithStableRendererP
 });
 
 const ThemedMicVocal = withUnistyles(MicVocal);
+const ThemedCopy = withUnistyles(Copy);
 const ThemedTodoCheckIcon = withUnistyles(Check);
 const ThemedFileSymlinkIcon = withUnistyles(FileSymlink);
 const ThemedTriangleAlertIcon = withUnistyles(TriangleAlertIcon);
@@ -186,6 +197,64 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
 });
 const mutedForegroundColorMapping = (theme: Theme) => ({
   color: theme.colors.mutedForeground,
+});
+
+interface LongPressCopyMenuProps {
+  getContent: () => string;
+  enabled?: boolean;
+  testID?: string;
+  children: ReactNode;
+}
+
+const longPressCopyMenuStylesheet = StyleSheet.create({
+  trigger: {
+    minWidth: 0,
+  },
+});
+
+const LongPressCopyMenuItemIcon = <ThemedCopy size={16} uniProps={foregroundMutedColorMapping} />;
+
+const LongPressCopyMenu = memo(function LongPressCopyMenu({
+  getContent,
+  enabled = true,
+  testID,
+  children,
+}: LongPressCopyMenuProps) {
+  const content = getContent();
+  const isEnabled = enabled && isCopyableText(content);
+  const handleCopy = useCallback(() => {
+    const nextContent = getContent();
+    if (!isCopyableText(nextContent)) {
+      return;
+    }
+    void writeMarkdownToRichClipboard(nextContent, getDefaultMarkdownClipboardEnvironment());
+  }, [getContent]);
+
+  if (!isEnabled) {
+    return <View style={longPressCopyMenuStylesheet.trigger}>{children}</View>;
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger
+        enabledOnWeb
+        enabledOnMobile
+        style={longPressCopyMenuStylesheet.trigger}
+        accessibilityLabel="Message actions"
+      >
+        {children}
+      </ContextMenuTrigger>
+      <ContextMenuContent align="start" width={180} mobileMode="dropdown" testID={testID}>
+        <ContextMenuItem
+          testID={testID ? `${testID}-copy` : undefined}
+          onSelect={handleCopy}
+          leading={LongPressCopyMenuItemIcon}
+        >
+          Copy
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 });
 const primaryForegroundColorMapping = (theme: Theme) => ({
   color: theme.colors.primaryForeground,
@@ -541,36 +610,42 @@ export const UserMessage = memo(function UserMessage({
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <View style={userMessageStylesheet.bubble}>
-          {hasImages ? (
-            <View style={imagePreviewContainerStyle}>
-              {images.map((image) => (
-                <View key={image.id} style={userMessageStylesheet.imagePill}>
-                  <UserMessageAttachmentThumbnail image={image} />
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {hasAttachments ? (
-            <View style={attachmentPreviewContainerStyle}>
-              {attachments.map((attachment, index) => (
-                <View
-                  key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
-                  style={userMessageStylesheet.structuredAttachmentPill}
-                >
-                  <Text style={userMessageStylesheet.structuredAttachmentText} numberOfLines={1}>
-                    {getUserMessageAttachmentLabel(attachment)}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {hasText ? (
-            <Text selectable style={userMessageStylesheet.text}>
-              {message}
-            </Text>
-          ) : null}
-        </View>
+        <LongPressCopyMenu
+          getContent={getMessageContent}
+          enabled={hasText}
+          testID="user-message-copy-menu"
+        >
+          <View style={userMessageStylesheet.bubble}>
+            {hasImages ? (
+              <View style={imagePreviewContainerStyle}>
+                {images.map((image) => (
+                  <View key={image.id} style={userMessageStylesheet.imagePill}>
+                    <UserMessageAttachmentThumbnail image={image} />
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {hasAttachments ? (
+              <View style={attachmentPreviewContainerStyle}>
+                {attachments.map((attachment, index) => (
+                  <View
+                    key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
+                    style={userMessageStylesheet.structuredAttachmentPill}
+                  >
+                    <Text style={userMessageStylesheet.structuredAttachmentText} numberOfLines={1}>
+                      {getUserMessageAttachmentLabel(attachment)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {hasText ? (
+              <Text selectable style={userMessageStylesheet.text}>
+                {message}
+              </Text>
+            ) : null}
+          </View>
+        </LongPressCopyMenu>
         {hasText ? (
           <View style={trailingRowStyle} pointerEvents={showTrailingRow ? "auto" : "none"}>
             <Text style={userMessageStylesheet.timestampText}>{formattedTimestamp}</Text>
@@ -1509,6 +1584,24 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   );
 });
 
+const CopyableMarkdownBlock = memo(function CopyableMarkdownBlock({
+  text,
+  rules,
+  parser,
+  onLinkPress,
+}: MemoizedMarkdownBlockProps) {
+  const getContent = useCallback(() => text, [text]);
+  return (
+    <LongPressCopyMenu
+      getContent={getContent}
+      enabled={isCopyableText(text)}
+      testID="assistant-message-copy-menu"
+    >
+      <MemoizedMarkdownBlock text={text} rules={rules} parser={parser} onLinkPress={onLinkPress} />
+    </LongPressCopyMenu>
+  );
+});
+
 interface MarkdownInheritedTextProps {
   inheritedStyles: TextStyle;
   textStyle: TextStyle;
@@ -1828,7 +1921,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           block={block}
           marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
         >
-          <MemoizedMarkdownBlock
+          <CopyableMarkdownBlock
             text={block}
             rules={markdownRules}
             parser={markdownParser}
@@ -1886,6 +1979,7 @@ export const SpeakMessage = memo(function SpeakMessage({
     ],
     [resolvedDisableOuterSpacing],
   );
+  const getMessageContent = useCallback(() => message, [message]);
 
   return (
     <View testID="speak-message" style={containerStyle}>
@@ -1893,7 +1987,15 @@ export const SpeakMessage = memo(function SpeakMessage({
         <ThemedMicVocal size={12} uniProps={foregroundMutedColorMapping} />
         <Text style={speakMessageStylesheet.headerLabel}>Spoke</Text>
       </View>
-      <Text style={speakMessageStylesheet.text}>{message}</Text>
+      <LongPressCopyMenu
+        getContent={getMessageContent}
+        enabled={isCopyableText(message)}
+        testID="speak-message-copy-menu"
+      >
+        <Text selectable style={speakMessageStylesheet.text}>
+          {message}
+        </Text>
+      </LongPressCopyMenu>
     </View>
   );
 });

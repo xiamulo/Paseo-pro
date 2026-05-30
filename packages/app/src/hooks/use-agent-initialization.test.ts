@@ -18,7 +18,10 @@ interface FakeDaemonClient {
 
 function makeClient(): FakeDaemonClient {
   return {
-    fetchAgentTimeline: vi.fn().mockResolvedValue(undefined),
+    fetchAgentTimeline: vi.fn().mockResolvedValue({
+      hasOlder: false,
+      startCursor: null,
+    }),
     refreshAgent: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -78,6 +81,45 @@ describe("ensureAgentIsInitialized", () => {
       projection: "canonical",
     });
     expect(getInitDeferred(getInitKey(serverId, agentId))?.requestDirection).toBe("tail");
+  });
+
+  it("loads all canonical tail pages on complete-history initialization", async () => {
+    const client = makeClient();
+    client.fetchAgentTimeline
+      .mockResolvedValueOnce({
+        hasOlder: true,
+        startCursor: { epoch: "epoch-1", seq: 80 },
+      })
+      .mockResolvedValueOnce({
+        hasOlder: false,
+        startCursor: { epoch: "epoch-1", seq: 40 },
+      });
+    useSessionStore.getState().initializeSession(serverId, client as never);
+
+    const promise = ensureAgentIsInitialized({
+      serverId,
+      agentId,
+      client: client as never,
+      setAgentInitializing: bindSetAgentInitializing(),
+      loadCompleteHistory: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(client.fetchAgentTimeline).toHaveBeenNthCalledWith(1, agentId, {
+      direction: "tail",
+      limit: TIMELINE_FETCH_PAGE_SIZE,
+      projection: "canonical",
+    });
+    expect(client.fetchAgentTimeline).toHaveBeenNthCalledWith(2, agentId, {
+      direction: "before",
+      cursor: { epoch: "epoch-1", seq: 80 },
+      limit: TIMELINE_FETCH_PAGE_SIZE,
+      projection: "canonical",
+    });
+    expect(getInitDeferred(getInitKey(serverId, agentId))?.requestDirection).toBe("complete-tail");
+    resolveInitDeferred(getInitKey(serverId, agentId));
+    await promise;
   });
 
   it("times out initialization after 30 seconds", async () => {

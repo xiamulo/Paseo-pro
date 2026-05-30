@@ -1047,6 +1047,8 @@ export class VoiceAssistantWebSocketServer {
         daemonStatusRpc: true,
         // COMPAT(agentSearch): added in v0.1.78, remove gate after 2026-11-20.
         agentSearch: true,
+        // COMPAT(agentInputQueue): added in v0.1.88, remove gate after 2026-11-30.
+        agentInputQueue: true,
       },
     };
   }

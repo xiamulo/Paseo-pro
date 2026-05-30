@@ -38,6 +38,26 @@ npx cross-env APP_VARIANT=production expo run:android --variant=release
 rm -rf android
 ```
 
+## Local APK download link
+
+Local APK builds must remain downloadable through the stable `latest.apk` link:
+
+- LAN: `http://192.168.1.3:10013/latest.apk`
+- Tailscale: `http://100.107.87.100:10013/latest.apk`
+- FRP: `http://104.245.13.171:10013/latest.apk`
+
+The link is served by the Docker Compose service in
+`/home/admin1/services/paseo-apk-download`, which mounts
+`/home/vibecode/gitproject/paseo/artifacts/android` read-only through Nginx.
+Docker is enabled at boot, and the container uses `restart: unless-stopped`.
+The FRP client maps `104.245.13.171:10013` to local `127.0.0.1:10013`.
+
+After every local APK build, make sure
+`/home/vibecode/gitproject/paseo/artifacts/android/latest.apk` points to the
+newly built APK. The helper script `/home/admin1/.local/bin/paseo-build-android-apk`
+does this automatically. If building manually, update the symlink before sharing
+the URL.
+
 ## Background agent streaming
 
 Android uses a Notifee foreground service to keep the existing app WebSocket alive

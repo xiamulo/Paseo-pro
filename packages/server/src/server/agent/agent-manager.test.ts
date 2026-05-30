@@ -437,6 +437,70 @@ function fakeCodexEmitting(args: FakeCodexEmitterArgs): AgentClient {
 
 const logger = createTestLogger();
 
+test("agent input queue persists changes and emits updates", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-queue-test-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const agentId = "00000000-0000-4000-8000-00000000a101";
+  await storage.upsert({
+    id: agentId,
+    provider: "codex",
+    cwd: workdir,
+    createdAt: "2026-05-30T00:00:00.000Z",
+    updatedAt: "2026-05-30T00:00:00.000Z",
+    labels: {},
+    lastStatus: "idle",
+    config: null,
+    persistence: null,
+  });
+  const manager = new AgentManager({
+    clients: {
+      codex: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-00000000b101",
+  });
+  const queueEvents: number[] = [];
+  const unsubscribe = manager.subscribe(
+    (event) => {
+      if (event.type === "agent_input_queue") {
+        queueEvents.push(event.items.length);
+      }
+    },
+    { replayState: false },
+  );
+
+  try {
+    const created = await manager.enqueueInputQueue({
+      agentId,
+      text: "  follow up  ",
+      clientState: [{ kind: "draft" }],
+    });
+    expect(created.item.text).toBe("follow up");
+    expect(created.items).toHaveLength(1);
+    expect(await storage.getInputQueue(agentId)).toHaveLength(1);
+
+    const updated = await manager.updateInputQueueItem({
+      agentId,
+      queueItemId: created.item.id,
+      text: "revised",
+    });
+    expect(updated.item.text).toBe("revised");
+
+    const removed = await manager.removeInputQueueItem({
+      agentId,
+      queueItemId: created.item.id,
+    });
+    expect(removed.item.text).toBe("revised");
+    expect(removed.items).toHaveLength(0);
+    expect(queueEvents).toEqual([1, 1, 0]);
+  } finally {
+    unsubscribe();
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("normalizeConfig injects the provider default model when omitted", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");

@@ -1003,6 +1003,75 @@ export const SendAgentMessageRequestSchema = z.object({
   attachments: AgentAttachmentsSchema,
 });
 
+export const AgentInputQueueItemSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  text: z.string(),
+  messageId: z.string().optional(),
+  images: z.array(ImageAttachmentSchema).default([]),
+  attachments: AgentAttachmentsSchema.default([]),
+  clientState: z.unknown().optional(),
+  sourceClientId: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const AgentInputQueuePayloadSchema = z.object({
+  requestId: z.string(),
+  agentId: z.string(),
+  items: z.array(AgentInputQueueItemSchema),
+  accepted: z.boolean(),
+  error: z.string().nullable(),
+});
+
+export const AgentInputQueueListRequestSchema = z.object({
+  type: z.literal("agent.input_queue.list.request"),
+  requestId: z.string(),
+  /** Accepts full ID, unique prefix, or exact full title (server resolves). */
+  agentId: z.string(),
+});
+
+export const AgentInputQueueEnqueueRequestSchema = z.object({
+  type: z.literal("agent.input_queue.enqueue.request"),
+  requestId: z.string(),
+  /** Accepts full ID, unique prefix, or exact full title (server resolves). */
+  agentId: z.string(),
+  text: z.string(),
+  messageId: z.string().optional(),
+  images: z.array(ImageAttachmentSchema).default([]),
+  attachments: AgentAttachmentsSchema.default([]),
+  clientState: z.unknown().optional(),
+});
+
+export const AgentInputQueueUpdateRequestSchema = z.object({
+  type: z.literal("agent.input_queue.update.request"),
+  requestId: z.string(),
+  /** Accepts full ID, unique prefix, or exact full title (server resolves). */
+  agentId: z.string(),
+  queueItemId: z.string(),
+  text: z.string().optional(),
+  messageId: z.string().optional(),
+  images: z.array(ImageAttachmentSchema).optional(),
+  attachments: AgentAttachmentsSchema.optional(),
+  clientState: z.unknown().optional(),
+});
+
+export const AgentInputQueueRemoveRequestSchema = z.object({
+  type: z.literal("agent.input_queue.remove.request"),
+  requestId: z.string(),
+  /** Accepts full ID, unique prefix, or exact full title (server resolves). */
+  agentId: z.string(),
+  queueItemId: z.string(),
+});
+
+export const AgentInputQueueSendNowRequestSchema = z.object({
+  type: z.literal("agent.input_queue.send_now.request"),
+  requestId: z.string(),
+  /** Accepts full ID, unique prefix, or exact full title (server resolves). */
+  agentId: z.string(),
+  queueItemId: z.string(),
+});
+
 export const WaitForFinishRequestSchema = z.object({
   type: z.literal("wait_for_finish_request"),
   requestId: z.string(),
@@ -1881,6 +1950,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProjectRenameRequestSchema,
   SetVoiceModeMessageSchema,
   SendAgentMessageRequestSchema,
+  AgentInputQueueListRequestSchema,
+  AgentInputQueueEnqueueRequestSchema,
+  AgentInputQueueUpdateRequestSchema,
+  AgentInputQueueRemoveRequestSchema,
+  AgentInputQueueSendNowRequestSchema,
   WaitForFinishRequestSchema,
   DaemonGetStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
@@ -2160,6 +2234,8 @@ export const ServerInfoStatusPayloadSchema = z
         rewind: z.boolean().optional(),
         // COMPAT(checkoutRefresh): added in v0.1.86, remove gate after 2026-11-29.
         checkoutRefresh: z.boolean().optional(),
+        // COMPAT(agentInputQueue): added in v0.1.88, remove gate after 2026-11-30.
+        agentInputQueue: z.boolean().optional(),
       })
       .optional(),
   })
@@ -2748,6 +2824,45 @@ export const SendAgentMessageResponseMessageSchema = z.object({
     agentId: z.string(),
     accepted: z.boolean(),
     error: z.string().nullable(),
+  }),
+});
+
+export const AgentInputQueueListResponseSchema = z.object({
+  type: z.literal("agent.input_queue.list.response"),
+  payload: AgentInputQueuePayloadSchema,
+});
+
+export const AgentInputQueueEnqueueResponseSchema = z.object({
+  type: z.literal("agent.input_queue.enqueue.response"),
+  payload: AgentInputQueuePayloadSchema.extend({
+    item: AgentInputQueueItemSchema.nullable(),
+  }),
+});
+
+export const AgentInputQueueUpdateResponseSchema = z.object({
+  type: z.literal("agent.input_queue.update.response"),
+  payload: AgentInputQueuePayloadSchema.extend({
+    item: AgentInputQueueItemSchema.nullable(),
+  }),
+});
+
+export const AgentInputQueueRemoveResponseSchema = z.object({
+  type: z.literal("agent.input_queue.remove.response"),
+  payload: AgentInputQueuePayloadSchema,
+});
+
+export const AgentInputQueueSendNowResponseSchema = z.object({
+  type: z.literal("agent.input_queue.send_now.response"),
+  payload: AgentInputQueuePayloadSchema.extend({
+    sentItemId: z.string().nullable(),
+  }),
+});
+
+export const AgentInputQueueUpdateMessageSchema = z.object({
+  type: z.literal("agent.input_queue.update"),
+  payload: z.object({
+    agentId: z.string(),
+    items: z.array(AgentInputQueueItemSchema),
   }),
 });
 
@@ -3741,6 +3856,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CancelAgentResponseMessageSchema,
   ClearAgentAttentionResponseMessageSchema,
   SendAgentMessageResponseMessageSchema,
+  AgentInputQueueListResponseSchema,
+  AgentInputQueueEnqueueResponseSchema,
+  AgentInputQueueUpdateResponseSchema,
+  AgentInputQueueRemoveResponseSchema,
+  AgentInputQueueSendNowResponseSchema,
+  AgentInputQueueUpdateMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
@@ -3889,6 +4010,13 @@ export type FetchAgentTimelineResponseMessage = z.infer<
 >;
 export type CancelAgentResponseMessage = z.infer<typeof CancelAgentResponseMessageSchema>;
 export type SendAgentMessageResponseMessage = z.infer<typeof SendAgentMessageResponseMessageSchema>;
+export type AgentInputQueueItem = z.infer<typeof AgentInputQueueItemSchema>;
+export type AgentInputQueueListResponse = z.infer<typeof AgentInputQueueListResponseSchema>;
+export type AgentInputQueueEnqueueResponse = z.infer<typeof AgentInputQueueEnqueueResponseSchema>;
+export type AgentInputQueueUpdateResponse = z.infer<typeof AgentInputQueueUpdateResponseSchema>;
+export type AgentInputQueueRemoveResponse = z.infer<typeof AgentInputQueueRemoveResponseSchema>;
+export type AgentInputQueueSendNowResponse = z.infer<typeof AgentInputQueueSendNowResponseSchema>;
+export type AgentInputQueueUpdateMessage = z.infer<typeof AgentInputQueueUpdateMessageSchema>;
 export type SetVoiceModeResponseMessage = z.infer<typeof SetVoiceModeResponseMessageSchema>;
 export type SetAgentModeResponseMessage = z.infer<typeof SetAgentModeResponseMessageSchema>;
 export type SetAgentModelResponseMessage = z.infer<typeof SetAgentModelResponseMessageSchema>;
@@ -3959,6 +4087,11 @@ export type FetchRecentProviderSessionsRequestMessage = z.infer<
 export type FetchWorkspacesRequestMessage = z.infer<typeof FetchWorkspacesRequestMessageSchema>;
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
+export type AgentInputQueueListRequest = z.infer<typeof AgentInputQueueListRequestSchema>;
+export type AgentInputQueueEnqueueRequest = z.infer<typeof AgentInputQueueEnqueueRequestSchema>;
+export type AgentInputQueueUpdateRequest = z.infer<typeof AgentInputQueueUpdateRequestSchema>;
+export type AgentInputQueueRemoveRequest = z.infer<typeof AgentInputQueueRemoveRequestSchema>;
+export type AgentInputQueueSendNowRequest = z.infer<typeof AgentInputQueueSendNowRequestSchema>;
 export type WaitForFinishRequest = z.infer<typeof WaitForFinishRequestSchema>;
 export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMessageSchema>;
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;
@@ -4157,6 +4290,7 @@ export const WSHelloMessageSchema = z.object({
       pushNotifications: z.boolean().optional(),
       [CLIENT_CAPS.reasoningMergeEnum]: z.boolean().optional(),
       [CLIENT_CAPS.customModeIcons]: z.boolean().optional(),
+      [CLIENT_CAPS.agentInputQueue]: z.boolean().optional(),
     })
     .passthrough()
     .optional(),

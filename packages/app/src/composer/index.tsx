@@ -29,7 +29,12 @@ import {
   Github,
   Paperclip,
 } from "lucide-react-native";
-import Animated from "react-native-reanimated";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
 import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH } from "@/constants/layout";
 import {
   AgentControls,
@@ -84,9 +89,10 @@ import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import type { MessageInputKeyboardActionKind } from "@/keyboard/actions";
 import { submitAgentInput } from "@/composer/submit";
+import { splitComposerAttachmentsForSubmit } from "@/composer/attachments/submit";
 import { useAppSettings } from "@/hooks/use-settings";
 import { isWeb, isNative } from "@/constants/platform";
-import type { GitHubSearchItem } from "@getpaseo/protocol/messages";
+import type { AgentInputQueueItem, GitHubSearchItem } from "@getpaseo/protocol/messages";
 import type {
   AttachmentMetadata,
   ComposerAttachment,
@@ -104,6 +110,8 @@ import { useGithubSearchQuery } from "@/git/use-github-search-query";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
 import { useComposerGithubAutoAttach } from "./github/auto-attach";
 import { resolveClientSlashCommand, type ClientSlashCommand } from "@/client-slash-commands";
+import { useTranslation } from "@/i18n";
+import { generateMessageId } from "@/types/stream";
 
 type QueuedMessage = QueuedComposerMessage;
 
@@ -140,8 +148,11 @@ function resolveIsDesktopWebBreakpoint(isMobile: boolean): boolean {
   return isWeb && !isMobile;
 }
 
-function resolveMessagePlaceholder(isDesktopWebBreakpoint: boolean): string {
-  return isDesktopWebBreakpoint ? DESKTOP_MESSAGE_PLACEHOLDER : MOBILE_MESSAGE_PLACEHOLDER;
+function resolveMessagePlaceholder(
+  isDesktopWebBreakpoint: boolean,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  return isDesktopWebBreakpoint ? t(DESKTOP_MESSAGE_PLACEHOLDER) : t(MOBILE_MESSAGE_PLACEHOLDER);
 }
 
 function resolveGithubSearchEnabled(
@@ -273,13 +284,15 @@ interface RenderQueueTrackArgs {
   queuedMessages: readonly QueuedMessage[];
   handleEditQueuedMessage: (id: string) => void;
   handleSendQueuedNow: (id: string) => Promise<void>;
+  queueHeaderText: string;
 }
 
 function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
-  const { queuedMessages, handleEditQueuedMessage, handleSendQueuedNow } = args;
+  const { queuedMessages, handleEditQueuedMessage, handleSendQueuedNow, queueHeaderText } = args;
   if (queuedMessages.length === 0) return null;
   return (
     <View style={styles.queueTrack}>
+      <Text style={styles.queueHeader}>{queueHeaderText}</Text>
       {queuedMessages.map((item) => (
         <QueuedMessageRow
           key={item.id}
@@ -454,17 +467,28 @@ interface QueuedMessageRowProps {
 }
 
 function QueuedMessageRow({ item, onEdit, onSendNow }: QueuedMessageRowProps) {
+  const pulse = useSharedValue(0.4);
+  const pulseStyle = useAnimatedStyle(() => ({
+    opacity: pulse.value,
+  }));
+  const pulseDotStyle = useMemo(() => [styles.queuePulseDot, pulseStyle], [pulseStyle]);
   const handleEdit = useCallback(() => {
     onEdit(item.id);
   }, [onEdit, item.id]);
   const handleSendNow = useCallback(() => {
     onSendNow(item.id);
   }, [onSendNow, item.id]);
+  useEffect(() => {
+    pulse.value = withRepeat(withTiming(1, { duration: 900 }), -1, true);
+  }, [pulse]);
   return (
     <View style={styles.queueItem}>
-      <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
-        {item.text}
-      </Text>
+      <View style={styles.queueTextRow}>
+        <Animated.View style={pulseDotStyle} />
+        <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
+          {item.text}
+        </Text>
+      </View>
       <View style={styles.queueActions}>
         <Pressable
           onPress={handleEdit}
@@ -674,6 +698,14 @@ const DESKTOP_MESSAGE_PLACEHOLDER = "Message the agent, tag @files, or use /comm
 const MOBILE_MESSAGE_PLACEHOLDER = "Message, @files, /commands";
 const StableMessageInput = memo(MessageInput);
 
+function queuedMessageFromDaemonItem(item: AgentInputQueueItem): QueuedMessage {
+  return {
+    id: item.id,
+    text: item.text,
+    attachments: Array.isArray(item.clientState) ? (item.clientState as ComposerAttachment[]) : [],
+  };
+}
+
 function resolveContextWindowValues(
   rawMax: number | null,
   rawUsed: number | null,
@@ -701,7 +733,8 @@ function ComposerCancelButton({
   isCancellingAgent,
   agentInterruptKeys,
 }: ComposerCancelButtonProps) {
-  const accessibilityLabel = isCancellingAgent ? "Canceling agent" : "Stop agent";
+  const { t } = useTranslation();
+  const accessibilityLabel = isCancellingAgent ? "Canceling agent" : t("Stop agent");
   const icon = isCancellingAgent ? (
     <ActivityIndicator size="small" color="white" />
   ) : (
@@ -721,7 +754,7 @@ function ComposerCancelButton({
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <View style={styles.tooltipRow}>
-          <Text style={styles.tooltipText}>Interrupt</Text>
+          <Text style={styles.tooltipText}>{t("Interrupt")}</Text>
           {shortcutNode}
         </View>
       </TooltipContent>
@@ -880,6 +913,7 @@ export function Composer({
   });
 
   const { settings: appSettings } = useAppSettings();
+  const { t } = useTranslation();
 
   const agentState = useSessionStore(useShallow(buildAgentStateSelector(serverId, agentId)));
 
@@ -887,6 +921,9 @@ export function Composer({
     state.sessions[serverId]?.queuedMessages?.get(agentId),
   );
   const queuedMessages = queuedMessagesRaw ?? EMPTY_ARRAY;
+  const daemonInputQueueSupported = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentInputQueue === true,
+  );
 
   const setQueuedMessages = useSessionStore((state) => state.setQueuedMessages);
   const setAgentStreamTail = useSessionStore((state) => state.setAgentStreamTail);
@@ -894,7 +931,7 @@ export function Composer({
 
   const isMobile = useIsCompactFormFactor();
   const isDesktopWebBreakpoint = resolveIsDesktopWebBreakpoint(isMobile);
-  const messagePlaceholder = resolveMessagePlaceholder(isDesktopWebBreakpoint);
+  const messagePlaceholder = resolveMessagePlaceholder(isDesktopWebBreakpoint, t);
   const userInput = value;
   const setUserInput = onChangeText;
   const {
@@ -1097,8 +1134,68 @@ export function Composer({
     [serverId, setQueuedMessages],
   );
 
+  useEffect(() => {
+    if (!client || !daemonInputQueueSupported) {
+      return;
+    }
+    let cancelled = false;
+    void client
+      .listAgentInputQueue(agentId)
+      .then((payload) => {
+        if (cancelled) return undefined;
+        setQueuedMessages(serverId, (prev) => {
+          const next = new Map(prev);
+          const items = payload.items.map(queuedMessageFromDaemonItem);
+          if (items.length === 0) {
+            next.delete(agentId);
+          } else {
+            next.set(agentId, items);
+          }
+          return next;
+        });
+        return undefined;
+      })
+      .catch((error) => {
+        console.warn("[Composer] Failed to load daemon input queue:", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, client, daemonInputQueueSupported, serverId, setQueuedMessages]);
+
   const queueMessage = useCallback(
     (queuedMessage: string, queuedAttachments: ComposerAttachment[]) => {
+      if (client && daemonInputQueueSupported) {
+        const trimmed = queuedMessage.trim();
+        if (!trimmed && queuedAttachments.length === 0) return;
+        void (async () => {
+          try {
+            const wirePayload = splitComposerAttachmentsForSubmit(queuedAttachments);
+            const imagesData = await encodeImages(wirePayload.images);
+            await client.enqueueAgentInputQueue(agentId, trimmed, {
+              messageId: generateMessageId(),
+              images: imagesData ?? [],
+              attachments: wirePayload.attachments,
+              clientState: queuedAttachments,
+            });
+          } catch (error) {
+            const result = queueComposerMessage({
+              agentId,
+              text: queuedMessage,
+              attachments: queuedAttachments,
+              queue: queueWriter,
+            });
+            if (result.queued) {
+              setSendError(error instanceof Error ? error.message : "Failed to queue message");
+            }
+          }
+        })();
+        setUserInput("");
+        setSelectedAttachments([]);
+        resetSuppression();
+        clearSentAttachments(queuedAttachments);
+        return;
+      }
       const result = queueComposerMessage({
         agentId,
         text: queuedMessage,
@@ -1115,9 +1212,12 @@ export function Composer({
     [
       agentId,
       clearSentAttachments,
+      client,
+      daemonInputQueueSupported,
       queueWriter,
       resetSuppression,
       setSelectedAttachments,
+      setSendError,
       setUserInput,
     ],
   );
@@ -1328,6 +1428,24 @@ export function Composer({
 
   const handleEditQueuedMessage = useCallback(
     (id: string) => {
+      if (client && daemonInputQueueSupported) {
+        const item = queueWriter.read(agentId).find((queued) => queued.id === id);
+        if (!item) return;
+        queueWriter.write((prev) => {
+          const next = new Map(prev);
+          next.set(
+            agentId,
+            (prev.get(agentId) ?? []).filter((queued) => queued.id !== id),
+          );
+          return next;
+        });
+        setUserInput(item.text);
+        setSelectedAttachments(composerWorkspaceAttachment.userAttachmentsOnly(item.attachments));
+        void client.removeAgentInputQueue(agentId, id).catch((error) => {
+          setSendError(error instanceof Error ? error.message : "Failed to edit queued message");
+        });
+        return;
+      }
       const result = editQueuedComposerMessage({
         agentId,
         messageId: id,
@@ -1337,11 +1455,27 @@ export function Composer({
       setUserInput(result.text);
       setSelectedAttachments(result.attachments);
     },
-    [agentId, queueWriter, setSelectedAttachments, setUserInput],
+    [
+      agentId,
+      client,
+      daemonInputQueueSupported,
+      queueWriter,
+      setSelectedAttachments,
+      setSendError,
+      setUserInput,
+    ],
   );
 
   const handleSendQueuedNow = useCallback(
     async (id: string) => {
+      if (client && daemonInputQueueSupported) {
+        try {
+          await client.sendAgentInputQueueNow(agentId, id);
+        } catch (error) {
+          setSendError(error instanceof Error ? error.message : "Failed to send queued message");
+        }
+        return;
+      }
       if (!sendAgentMessageRef.current && !onSubmitMessageRef.current) return;
       // Reuse the regular send path; server-side send atomically interrupts any active run.
       const result = await sendQueuedComposerMessageNow({
@@ -1355,7 +1489,7 @@ export function Composer({
         setSendError(result.errorMessage);
       }
     },
-    [agentId, queueWriter, submitMessage],
+    [agentId, client, daemonInputQueueSupported, queueWriter, submitMessage],
   );
 
   const handleQueue = useCallback(
@@ -1501,7 +1635,7 @@ export function Composer({
     () => [
       {
         id: "image",
-        label: "Add image",
+        label: t("Add image"),
         icon: <ThemedPaperclip size={ICON_SIZE.md} uniProps={iconForegroundMutedMapping} />,
         onSelect: () => {
           void handlePickImage();
@@ -1509,14 +1643,14 @@ export function Composer({
       },
       {
         id: "github",
-        label: "Add issue or PR",
+        label: t("Add issue or PR"),
         icon: <ThemedGithub size={ICON_SIZE.md} uniProps={iconForegroundMutedMapping} />,
         onSelect: () => {
           setIsGithubPickerOpen(true);
         },
       },
     ],
-    [handlePickImage],
+    [handlePickImage, t],
   );
 
   const handleToggleGithubItem = useCallback(
@@ -1619,8 +1753,16 @@ export function Composer({
   );
 
   const queueList = useMemo(
-    () => renderQueueTrack({ queuedMessages, handleEditQueuedMessage, handleSendQueuedNow }),
-    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages],
+    () =>
+      renderQueueTrack({
+        queuedMessages,
+        handleEditQueuedMessage,
+        handleSendQueuedNow,
+        queueHeaderText: t("{count} queued, sending after current run", {
+          count: queuedMessages.length,
+        }),
+      }),
+    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
   );
 
   const messageInputContainerRef = useRef<View>(null);
@@ -1633,8 +1775,8 @@ export function Composer({
     [sendError],
   );
   const githubEmptyText = githubSearchResultsQuery.isFetching
-    ? "Searching..."
-    : "No results found.";
+    ? t("Searching...")
+    : t("No results found.");
   const autocompleteVisible = autocomplete.isVisible && isPaneFocused;
 
   return (
@@ -1691,6 +1833,7 @@ export function Composer({
               isAgentRunning={isAgentRunning}
               defaultSendBehavior={appSettings.sendBehavior}
               onQueue={handleQueue}
+              queuedMessageCount={queuedMessages.length}
               onSubmitLoadingPress={submitLoadingPressHandler}
               onKeyPress={handleCommandKeyPress}
               onSelectionChange={handleSelectionChange}
@@ -1705,8 +1848,8 @@ export function Composer({
               onSelect={noop}
               keepOpenOnSelect
               searchable
-              searchPlaceholder="Search issues and PRs..."
-              title="Attach issue or PR"
+              searchPlaceholder={t("Search issues and PRs...")}
+              title={t("Attach issue or PR")}
               open={isGithubPickerOpen}
               onOpenChange={handleGithubPickerOpenChange}
               onSearchQueryChange={setGithubSearchQuery}
@@ -1890,6 +2033,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
     flexDirection: "column",
     gap: theme.spacing[2],
   },
+  queueHeader: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    paddingHorizontal: theme.spacing[1],
+  },
   queueItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -1897,10 +2045,24 @@ const styles = StyleSheet.create((theme: Theme) => ({
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[2],
     backgroundColor: theme.colors.surface1,
+    opacity: 0.72,
     borderRadius: theme.borderRadius.lg,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     gap: theme.spacing[2],
+  },
+  queueTextRow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  queuePulseDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.accent,
   },
   queueText: {
     flex: 1,

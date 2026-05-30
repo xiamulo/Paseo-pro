@@ -18,6 +18,7 @@ import {
   type AgentFeature,
   type AgentLaunchContext,
   type AgentSlashCommand,
+  type AgentPromptContentBlock,
   type AgentMode,
   type AgentPermissionRequest,
   type AgentPermissionResponse,
@@ -57,6 +58,7 @@ import { getAgentProviderDefinition } from "@getpaseo/protocol/provider-manifest
 import { IMPORTABLE_PROVIDERS } from "./provider-registry.js";
 import { invokeRewindCapability, type RewindMode } from "./rewind/rewind.js";
 import { isSystemInjectedEnvelope } from "./agent-prompt.js";
+import type { AgentAttachment, AgentInputQueueItem } from "../messages.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -120,6 +122,7 @@ export type {
 
 export type AgentManagerEvent =
   | { type: "agent_state"; agent: ManagedAgent }
+  | { type: "agent_input_queue"; agentId: string; items: AgentInputQueueItem[] }
   | {
       type: "agent_stream";
       agentId: string;
@@ -384,6 +387,18 @@ function validateAgentId(agentId: string, source: string): string {
   return result.data;
 }
 
+function hasQueuedInputContent(input: {
+  text: string;
+  images?: Array<{ data: string; mimeType: string }>;
+  attachments?: AgentAttachment[];
+}): boolean {
+  return (
+    input.text.trim().length > 0 ||
+    Boolean(input.images?.length) ||
+    Boolean(input.attachments?.length)
+  );
+}
+
 function buildExplicitTimelineSeedForRegister(
   now: Date,
   options:
@@ -425,6 +440,7 @@ export class AgentManager {
   private readonly durableTimelineStore?: AgentTimelineStore;
   private readonly previousStatuses = new Map<string, AgentLifecycleStatus>();
   private readonly backgroundTasks = new Set<Promise<void>>();
+  private readonly inputQueueDrains = new Set<string>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private appendSystemPrompt: string;
@@ -564,6 +580,141 @@ export class AgentManager {
       Boolean(agent.activeForegroundTurnId) ||
       this.foregroundRuns.hasPendingRun(agentId)
     );
+  }
+
+  async listInputQueue(agentId: string): Promise<AgentInputQueueItem[]> {
+    const resolvedAgentId = validateAgentId(agentId, "listInputQueue");
+    return this.requireInputQueueRegistry().getInputQueue(resolvedAgentId);
+  }
+
+  async enqueueInputQueue(input: {
+    agentId: string;
+    text: string;
+    messageId?: string;
+    images?: Array<{ data: string; mimeType: string }>;
+    attachments?: AgentAttachment[];
+    clientState?: unknown;
+    sourceClientId?: string;
+  }): Promise<{ item: AgentInputQueueItem; items: AgentInputQueueItem[] }> {
+    const agentId = validateAgentId(input.agentId, "enqueueInputQueue");
+    const text = input.text.trim();
+    const images = input.images ?? [];
+    const attachments = input.attachments ?? [];
+    if (!hasQueuedInputContent({ text, images, attachments })) {
+      throw new Error("Cannot queue an empty message");
+    }
+    const timestamp = new Date().toISOString();
+    const item: AgentInputQueueItem = {
+      id: this.idFactory(),
+      agentId,
+      text,
+      ...(input.messageId ? { messageId: input.messageId } : {}),
+      images,
+      attachments,
+      ...(input.clientState !== undefined ? { clientState: input.clientState } : {}),
+      ...(input.sourceClientId ? { sourceClientId: input.sourceClientId } : {}),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const items = await this.requireInputQueueRegistry().updateInputQueue(agentId, (current) => [
+      ...current,
+      item,
+    ]);
+    this.dispatchInputQueue(agentId, items);
+    this.scheduleInputQueueDrain(agentId);
+    return { item, items };
+  }
+
+  async updateInputQueueItem(input: {
+    agentId: string;
+    queueItemId: string;
+    text?: string;
+    messageId?: string;
+    images?: Array<{ data: string; mimeType: string }>;
+    attachments?: AgentAttachment[];
+    clientState?: unknown;
+  }): Promise<{ item: AgentInputQueueItem; items: AgentInputQueueItem[] }> {
+    const agentId = validateAgentId(input.agentId, "updateInputQueueItem");
+    let updatedItem: AgentInputQueueItem | null = null;
+    const items = await this.requireInputQueueRegistry().updateInputQueue(agentId, (current) => {
+      let found = false;
+      const next = current.map((item) => {
+        if (item.id !== input.queueItemId) {
+          return item;
+        }
+        found = true;
+        const text = input.text === undefined ? item.text : input.text.trim();
+        const images = input.images ?? item.images ?? [];
+        const attachments = input.attachments ?? item.attachments ?? [];
+        if (!hasQueuedInputContent({ text, images, attachments })) {
+          throw new Error("Cannot queue an empty message");
+        }
+        updatedItem = {
+          ...item,
+          text,
+          ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+          images,
+          attachments,
+          ...(input.clientState !== undefined ? { clientState: input.clientState } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        return updatedItem;
+      });
+      if (!found) {
+        throw new Error(`Queued message not found: ${input.queueItemId}`);
+      }
+      return next;
+    });
+    if (!updatedItem) {
+      throw new Error(`Queued message not found: ${input.queueItemId}`);
+    }
+    this.dispatchInputQueue(agentId, items);
+    this.scheduleInputQueueDrain(agentId);
+    return { item: updatedItem, items };
+  }
+
+  async removeInputQueueItem(input: {
+    agentId: string;
+    queueItemId: string;
+  }): Promise<{ item: AgentInputQueueItem; items: AgentInputQueueItem[] }> {
+    const agentId = validateAgentId(input.agentId, "removeInputQueueItem");
+    let removedItem: AgentInputQueueItem | null = null;
+    const items = await this.requireInputQueueRegistry().updateInputQueue(agentId, (current) => {
+      const next = current.filter((item) => {
+        if (item.id !== input.queueItemId) {
+          return true;
+        }
+        removedItem = item;
+        return false;
+      });
+      if (!removedItem) {
+        throw new Error(`Queued message not found: ${input.queueItemId}`);
+      }
+      return next;
+    });
+    if (!removedItem) {
+      throw new Error(`Queued message not found: ${input.queueItemId}`);
+    }
+    this.dispatchInputQueue(agentId, items);
+    return { item: removedItem, items };
+  }
+
+  async prependInputQueueItem(
+    agentId: string,
+    item: AgentInputQueueItem,
+  ): Promise<AgentInputQueueItem[]> {
+    const resolvedAgentId = validateAgentId(agentId, "prependInputQueueItem");
+    const items = await this.requireInputQueueRegistry().updateInputQueue(
+      resolvedAgentId,
+      (current) => {
+        if (current.some((existing) => existing.id === item.id)) {
+          return current;
+        }
+        return [{ ...item, updatedAt: new Date().toISOString() }, ...current];
+      },
+    );
+    this.dispatchInputQueue(resolvedAgentId, items);
+    return items;
   }
 
   subscribe(callback: AgentSubscriber, options?: SubscribeOptions): () => void {
@@ -3240,7 +3391,98 @@ export class AgentManager {
     return row;
   }
 
+  private requireInputQueueRegistry(): AgentStorage {
+    if (!this.registry) {
+      throw new Error("Agent input queue requires persistent agent storage");
+    }
+    return this.registry;
+  }
+
+  private buildInputQueuePrompt(item: AgentInputQueueItem): AgentPromptInput {
+    const text = item.text.trim();
+    const images = item.images ?? [];
+    const attachments = item.attachments ?? [];
+    if (images.length === 0 && attachments.length === 0) {
+      return text;
+    }
+    const blocks: AgentPromptContentBlock[] = [];
+    if (text.length > 0) {
+      blocks.push({ type: "text", text });
+    }
+    for (const image of images) {
+      blocks.push({ type: "image", data: image.data, mimeType: image.mimeType });
+    }
+    for (const attachment of attachments) {
+      blocks.push(attachment);
+    }
+    return blocks;
+  }
+
+  private dispatchInputQueue(agentId: string, items: AgentInputQueueItem[]): void {
+    this.dispatch({ type: "agent_input_queue", agentId, items: [...items] });
+  }
+
+  private scheduleInputQueueDrain(agentId: string): void {
+    if (this.inputQueueDrains.has(agentId)) {
+      return;
+    }
+    this.inputQueueDrains.add(agentId);
+    const task = this.drainNextQueuedInput(agentId)
+      .catch((error) => {
+        this.logger.warn({ err: error, agentId }, "Failed to drain agent input queue");
+      })
+      .finally(() => {
+        this.inputQueueDrains.delete(agentId);
+      });
+    this.trackBackgroundTask(task);
+  }
+
+  private async drainNextQueuedInput(agentId: string): Promise<void> {
+    if (!this.registry) {
+      return;
+    }
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.lifecycle !== "idle" || this.hasInFlightRun(agentId)) {
+      return;
+    }
+
+    let nextItem: AgentInputQueueItem | null = null;
+    const items = await this.registry.updateInputQueue(agentId, (current) => {
+      const [first, ...rest] = current;
+      nextItem = first ?? null;
+      return rest;
+    });
+    if (!nextItem) {
+      return;
+    }
+    const item = nextItem;
+    this.dispatchInputQueue(agentId, items);
+
+    const prompt = this.buildInputQueuePrompt(item);
+    try {
+      if (this.tryRunOutOfBand(agentId, prompt)) {
+        setTimeout(() => this.scheduleInputQueueDrain(agentId), 0);
+        return;
+      }
+      const events = this.streamAgent(agentId, prompt);
+      void (async () => {
+        try {
+          for await (const _ of events) {
+            // Events are broadcast through normal AgentManager subscribers.
+          }
+        } catch (error) {
+          await this.prependInputQueueItem(agentId, item);
+          this.logger.error({ err: error, agentId }, "Queued agent input failed to start");
+        }
+      })();
+    } catch (error) {
+      await this.prependInputQueueItem(agentId, item);
+      throw error;
+    }
+  }
+
   private emitState(agent: ManagedAgent, options?: { persist?: boolean }): void {
+    const previousLifecycle = this.previousStatuses.get(agent.id);
     // Keep attention as an edge-triggered unread signal, not a level signal.
     this.checkAndSetAttention(agent);
     if (options?.persist !== false) {
@@ -3267,6 +3509,10 @@ export class AgentManager {
       type: "agent_state",
       agent: { ...agent },
     });
+
+    if (previousLifecycle === "running" && agent.lifecycle === "idle") {
+      this.scheduleInputQueueDrain(agent.id);
+    }
   }
 
   private syncFeaturesFromSession(agent: ManagedAgent): void {
@@ -3416,6 +3662,13 @@ export class AgentManager {
       }
       if (
         subscriber.agentId &&
+        event.type === "agent_input_queue" &&
+        subscriber.agentId !== event.agentId
+      ) {
+        continue;
+      }
+      if (
+        subscriber.agentId &&
         event.type === "agent_state" &&
         subscriber.agentId !== event.agent.id
       ) {
@@ -3427,6 +3680,12 @@ export class AgentManager {
           continue;
         }
         if (event.type === "agent_stream") {
+          const agent = this.agents.get(event.agentId);
+          if (agent?.internal) {
+            continue;
+          }
+        }
+        if (event.type === "agent_input_queue") {
           const agent = this.agents.get(event.agentId);
           if (agent?.internal) {
             continue;

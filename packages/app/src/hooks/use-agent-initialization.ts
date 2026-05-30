@@ -8,9 +8,14 @@ import {
   getInitKey,
   rejectInitDeferred,
 } from "@/utils/agent-initialization";
-import { planInitialAgentTimelineSync, planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
+import {
+  planInitialAgentTimelineSync,
+  planTimelineOlderFetch,
+  planTimelineTailFetch,
+} from "@/timeline/timeline-sync-plan";
 
 export const INIT_TIMEOUT_MS = 30_000;
+export const COMPLETE_HISTORY_INIT_TIMEOUT_MS = 120_000;
 
 export type SetAgentInitializing = (agentId: string, initializing: boolean) => void;
 
@@ -19,10 +24,11 @@ export interface EnsureAgentIsInitializedInput {
   agentId: string;
   client: Pick<DaemonClient, "fetchAgentTimeline"> | null;
   setAgentInitializing: SetAgentInitializing;
+  loadCompleteHistory?: boolean;
 }
 
 export function ensureAgentIsInitialized(input: EnsureAgentIsInitializedInput): Promise<void> {
-  const { serverId, agentId, client, setAgentInitializing } = input;
+  const { serverId, agentId, client, setAgentInitializing, loadCompleteHistory = false } = input;
   const key = getInitKey(serverId, agentId);
   const existing = getInitDeferred(key);
   if (existing) {
@@ -33,15 +39,20 @@ export function ensureAgentIsInitialized(input: EnsureAgentIsInitializedInput): 
   const cursor = session?.agentTimelineCursor.get(agentId);
   const hasAuthoritativeHistory = session?.agentAuthoritativeHistoryApplied.get(agentId) === true;
   const timelineRequest = planInitialAgentTimelineSync({ cursor, hasAuthoritativeHistory });
+  const shouldLoadCompleteHistory = loadCompleteHistory && timelineRequest.direction === "tail";
 
-  const deferred = createInitDeferred(key, timelineRequest.direction);
+  const deferred = createInitDeferred(
+    key,
+    shouldLoadCompleteHistory ? "complete-tail" : timelineRequest.direction,
+  );
+  const timeoutMs = shouldLoadCompleteHistory ? COMPLETE_HISTORY_INIT_TIMEOUT_MS : INIT_TIMEOUT_MS;
   const timeoutId = setTimeout(() => {
     setAgentInitializing(agentId, false);
     rejectInitDeferred(
       key,
-      new Error(`History sync timed out after ${Math.round(INIT_TIMEOUT_MS / 1000)}s`),
+      new Error(`History sync timed out after ${Math.round(timeoutMs / 1000)}s`),
     );
-  }, INIT_TIMEOUT_MS);
+  }, timeoutMs);
   attachInitTimeout(key, timeoutId);
 
   setAgentInitializing(agentId, true);
@@ -52,12 +63,38 @@ export function ensureAgentIsInitialized(input: EnsureAgentIsInitializedInput): 
     return deferred.promise;
   }
 
-  client.fetchAgentTimeline(agentId, timelineRequest).catch((error) => {
+  const fetchPromise = shouldLoadCompleteHistory
+    ? fetchCompleteCanonicalTail({ client, agentId })
+    : client.fetchAgentTimeline(agentId, timelineRequest);
+
+  fetchPromise.catch((error) => {
     setAgentInitializing(agentId, false);
     rejectInitDeferred(key, error instanceof Error ? error : new Error(String(error)));
   });
 
   return deferred.promise;
+}
+
+async function fetchCompleteCanonicalTail(input: {
+  client: Pick<DaemonClient, "fetchAgentTimeline">;
+  agentId: string;
+}): Promise<void> {
+  let payload = await input.client.fetchAgentTimeline(input.agentId, planTimelineTailFetch());
+
+  while (payload.hasOlder) {
+    if (!payload.startCursor) {
+      throw new Error("Unable to continue loading agent history: missing timeline cursor");
+    }
+
+    payload = await input.client.fetchAgentTimeline(
+      input.agentId,
+      planTimelineOlderFetch(payload.startCursor),
+    );
+  }
+}
+
+export interface EnsureAgentInitializedOptions {
+  loadCompleteHistory?: boolean;
 }
 
 export interface RefreshAgentInput {
@@ -112,8 +149,14 @@ export function useAgentInitialization({
   );
 
   const ensureAgentIsInitializedCallback = useCallback(
-    (agentId: string): Promise<void> =>
-      ensureAgentIsInitialized({ serverId, agentId, client, setAgentInitializing }),
+    (agentId: string, options: EnsureAgentInitializedOptions = {}): Promise<void> =>
+      ensureAgentIsInitialized({
+        serverId,
+        agentId,
+        client,
+        setAgentInitializing,
+        loadCompleteHistory: options.loadCompleteHistory,
+      }),
     [client, serverId, setAgentInitializing],
   );
 

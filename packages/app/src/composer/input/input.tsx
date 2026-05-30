@@ -21,7 +21,7 @@ import {
 } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
+import { ArrowUp, Mic, MicOff, CornerDownLeft, ListPlus, Plus, Square } from "lucide-react-native";
 import Animated, { useSharedValue, useAnimatedStyle, withTiming } from "react-native-reanimated";
 import { useDictation } from "@/hooks/use-dictation";
 import { DictationOverlay } from "@/components/dictation-controls";
@@ -57,6 +57,7 @@ import { isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useComposerHeightMirror } from "./height-mirror";
 import { computeCanStartDictation } from "./state";
+import { useTranslation } from "@/i18n";
 
 export interface AttachmentMenuItem {
   id: string;
@@ -108,6 +109,7 @@ export interface MessageInputProps {
   defaultSendBehavior?: "interrupt" | "queue";
   /** Callback for queue button when agent is running */
   onQueue?: (payload: MessagePayload) => void;
+  queuedMessageCount?: number;
   /** Optional handler used when submit button is in loading state. */
   onSubmitLoadingPress?: () => void;
   /** Intercept key press events before default handling. Return true to prevent default. */
@@ -211,13 +213,14 @@ function AttachmentDropdown({
   renderAttachButtonIcon: (input: { hovered?: boolean }) => React.ReactElement;
   attachmentMenuItems: AttachmentMenuItem[];
 }) {
+  const { t } = useTranslation();
   return (
     <DropdownMenu>
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
         <TooltipTrigger asChild>
           <DropdownMenuTrigger
             disabled={!isConnected || disabled}
-            accessibilityLabel="Add attachment"
+            accessibilityLabel={t("Add attachment")}
             accessibilityRole="button"
             testID="message-input-attach-button"
             style={attachButtonStyle}
@@ -226,7 +229,7 @@ function AttachmentDropdown({
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="top" align="center" offset={8}>
-          <Text style={styles.tooltipText}>Add attachment</Text>
+          <Text style={styles.tooltipText}>{t("Add attachment")}</Text>
         </TooltipContent>
       </Tooltip>
       <DropdownMenuContent
@@ -299,13 +302,29 @@ function SendButtonContent({
   isSubmitLoading,
   submitIcon,
   buttonIconSize,
+  defaultActionQueues,
+  queuedMessageCount,
 }: {
   isSubmitLoading: boolean;
   submitIcon: "arrow" | "return";
   buttonIconSize: number;
+  defaultActionQueues: boolean;
+  queuedMessageCount: number;
 }) {
   if (isSubmitLoading) {
     return <ThemedActivityIndicator size="small" uniProps={iconAccentForegroundMapping} />;
+  }
+  if (defaultActionQueues) {
+    return (
+      <>
+        <ThemedListPlus size={buttonIconSize} uniProps={iconAccentForegroundMapping} />
+        {queuedMessageCount > 0 ? (
+          <View style={styles.queueBadge}>
+            <Text style={styles.queueBadgeText}>{queuedMessageCount}</Text>
+          </View>
+        ) : null}
+      </>
+    );
   }
   if (submitIcon === "return") {
     return <ThemedCornerDownLeft size={buttonIconSize} uniProps={iconAccentForegroundMapping} />;
@@ -698,6 +717,7 @@ function SendButtonTooltip({
   buttonIconSize,
   submitButtonAccessibilityLabel,
   defaultActionQueues,
+  queuedMessageCount,
   sendKeys,
 }: {
   shouldShow: boolean;
@@ -712,6 +732,7 @@ function SendButtonTooltip({
   buttonIconSize: number;
   submitButtonAccessibilityLabel: string | undefined;
   defaultActionQueues: boolean;
+  queuedMessageCount: number;
   sendKeys: ShortcutChord | null | undefined;
 }) {
   if (!shouldShow) return null;
@@ -728,6 +749,8 @@ function SendButtonTooltip({
           isSubmitLoading={isSubmitLoading}
           submitIcon={submitIcon}
           buttonIconSize={buttonIconSize}
+          defaultActionQueues={defaultActionQueues}
+          queuedMessageCount={queuedMessageCount}
         />
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
@@ -1096,6 +1119,7 @@ interface ResolvedMessageInputProps {
   isAgentRunning: boolean;
   defaultSendBehavior: "interrupt" | "queue";
   onQueue: ((payload: MessagePayload) => void) | undefined;
+  queuedMessageCount: number;
   onSubmitLoadingPress: (() => void) | undefined;
   onKeyPressCallback: ((event: { key: string; preventDefault: () => void }) => boolean) | undefined;
   onSelectionChangeCallback: ((selection: { start: number; end: number }) => void) | undefined;
@@ -1136,6 +1160,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     isAgentRunning: props.isAgentRunning ?? false,
     defaultSendBehavior: props.defaultSendBehavior ?? "interrupt",
     onQueue: props.onQueue,
+    queuedMessageCount: props.queuedMessageCount ?? 0,
     onSubmitLoadingPress: props.onSubmitLoadingPress,
     onKeyPressCallback: props.onKeyPress,
     onSelectionChangeCallback: props.onSelectionChange,
@@ -1154,6 +1179,7 @@ function extractErrorMessage(error: unknown): string | null {
 
 export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
   function MessageInput(props, ref) {
+    const { t } = useTranslation();
     const {
       value,
       onChangeText,
@@ -1184,6 +1210,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isAgentRunning,
       defaultSendBehavior,
       onQueue,
+      queuedMessageCount,
       onSubmitLoadingPress,
       onKeyPressCallback,
       onSelectionChangeCallback,
@@ -1740,7 +1767,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
               onChangeText={handleInputChange}
               placeholder={placeholder}
               uniProps={textInputPlaceholderColorMapping}
-              accessibilityLabel="Message agent..."
+              accessibilityLabel={t("Message agent...")}
               onFocus={handleInputFocus}
               onBlur={handleInputBlur}
               style={textInputStyle}
@@ -1801,6 +1828,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 buttonIconSize={buttonIconSize}
                 submitButtonAccessibilityLabel={submitButtonAccessibilityLabel}
                 defaultActionQueues={defaultActionQueues}
+                queuedMessageCount={queuedMessageCount}
                 sendKeys={sendKeys}
               />
             </View>
@@ -1927,6 +1955,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     backgroundColor: theme.colors.destructive,
   },
   sendButton: {
+    position: "relative",
     width: 28,
     height: 28,
     borderRadius: theme.borderRadius.full,
@@ -1950,6 +1979,25 @@ const styles = StyleSheet.create((theme: Theme) => ({
   buttonDisabled: {
     opacity: 0.5,
   },
+  queueBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface0,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.accentForeground,
+  },
+  queueBadgeText: {
+    color: theme.colors.foreground,
+    fontSize: 10,
+    fontWeight: theme.fontWeight.medium,
+  },
   overlayContainer: {
     position: "absolute",
     display: "flex",
@@ -1969,6 +2017,7 @@ const ThemedMic = withUnistyles(Mic);
 const ThemedMicOff = withUnistyles(MicOff);
 const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedCornerDownLeft = withUnistyles(CornerDownLeft);
+const ThemedListPlus = withUnistyles(ListPlus);
 const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
 const ThemedTextInput = withUnistyles(TextInput);
 

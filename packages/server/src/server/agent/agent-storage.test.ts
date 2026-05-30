@@ -296,6 +296,77 @@ describe("AgentStorage", () => {
     expect(recordAfterSnapshot?.archivedAt).toBe(archivedAt);
   });
 
+  test("applySnapshot preserves queued input", async () => {
+    const agentId = "agent-queue";
+    await storage.applySnapshot(
+      createManagedAgent({
+        id: agentId,
+        lifecycle: "idle",
+      }),
+    );
+
+    await storage.setInputQueue(agentId, [
+      {
+        id: "queue-1",
+        agentId,
+        text: "follow up",
+        images: [],
+        attachments: [],
+        clientState: [{ kind: "draft" }],
+        createdAt: "2026-05-30T00:00:00.000Z",
+        updatedAt: "2026-05-30T00:00:00.000Z",
+      },
+    ]);
+
+    await storage.applySnapshot(
+      createManagedAgent({
+        id: agentId,
+        lifecycle: "running",
+        updatedAt: new Date("2026-05-30T00:01:00.000Z"),
+      }),
+    );
+
+    const recordAfterSnapshot = await storage.get(agentId);
+    expect(recordAfterSnapshot?.inputQueue).toHaveLength(1);
+    expect(recordAfterSnapshot?.inputQueue?.[0]?.text).toBe("follow up");
+    expect(recordAfterSnapshot?.inputQueue?.[0]?.clientState).toEqual([{ kind: "draft" }]);
+  });
+
+  test("serializes concurrent queued input updates", async () => {
+    const agentId = "agent-queue-concurrent";
+    await storage.applySnapshot(createManagedAgent({ id: agentId, lifecycle: "idle" }));
+
+    await Promise.all([
+      storage.updateInputQueue(agentId, (items) => [
+        ...items,
+        {
+          id: "queue-1",
+          agentId,
+          text: "first",
+          images: [],
+          attachments: [],
+          createdAt: "2026-05-30T00:00:00.000Z",
+          updatedAt: "2026-05-30T00:00:00.000Z",
+        },
+      ]),
+      storage.updateInputQueue(agentId, (items) => [
+        ...items,
+        {
+          id: "queue-2",
+          agentId,
+          text: "second",
+          images: [],
+          attachments: [],
+          createdAt: "2026-05-30T00:00:01.000Z",
+          updatedAt: "2026-05-30T00:00:01.000Z",
+        },
+      ]),
+    ]);
+
+    const queue = await storage.getInputQueue(agentId);
+    expect(queue.map((item) => item.text).sort()).toEqual(["first", "second"]);
+  });
+
   test("stores titles independently of snapshots", async () => {
     await storage.applySnapshot(
       createManagedAgent({

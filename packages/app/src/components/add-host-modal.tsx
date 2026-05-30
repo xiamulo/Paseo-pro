@@ -13,9 +13,9 @@ import {
 import { DaemonConnectionTestError } from "@/utils/test-daemon-connection";
 import { AdaptiveModalSheet, AdaptiveTextInput, type SheetHeader } from "./adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 const FLEX_ONE_STYLE = { flex: 1 } as const;
-const DIRECT_CONNECTION_HEADER: SheetHeader = { title: "Direct connection" };
 
 interface DirectConnectionDraft {
   host: string;
@@ -267,6 +267,7 @@ export interface AddHostModalProps {
 
 export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostModalProps) {
   const { theme } = useUnistyles();
+  const { t } = useTranslation();
   const daemons = useHosts();
   const { probeAndUpsertDirectConnection } = useHostMutations();
   const isMobile = useIsCompactFormFactor();
@@ -281,6 +282,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const [advancedUri, setAdvancedUri] = useState("");
   const [inputResetKey, bumpInputResetKey] = useReducer((key: number) => key + 1, 0);
+  const header = useMemo<SheetHeader>(() => ({ title: t("Direct connection") }), [t]);
 
   const clearInput = useCallback(() => {
     setHost("");
@@ -426,20 +428,20 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
 
   return (
     <AdaptiveModalSheet
-      header={DIRECT_CONNECTION_HEADER}
+      header={header}
       visible={visible}
       onClose={handleClose}
       testID="add-host-modal"
     >
-      <Text style={styles.helper}>Enter the address of a Paseo server.</Text>
+      <Text style={styles.helper}>{t("Enter the address of a Paseo server.")}</Text>
 
       <View style={styles.portRow}>
         <View style={hostFieldStyle}>
-          <Text style={styles.label}>Host</Text>
+          <Text style={styles.label}>{t("Host")}</Text>
           <AdaptiveTextInput
             testID="direct-host-input"
             nativeID="direct-host-input"
-            accessibilityLabel="Host"
+            accessibilityLabel={t("Host")}
             initialValue={host}
             resetKey={`direct-host-${inputResetKey}`}
             value={host}
@@ -455,11 +457,11 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
           />
         </View>
         <View style={portFieldStyle}>
-          <Text style={styles.label}>Port</Text>
+          <Text style={styles.label}>{t("Port")}</Text>
           <AdaptiveTextInput
             testID="direct-port-input"
             nativeID="direct-port-input"
-            accessibilityLabel="Port"
+            accessibilityLabel={t("Port")}
             initialValue={port}
             resetKey={`direct-port-${inputResetKey}`}
             value={port}
@@ -482,7 +484,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
         onPress={handleToggleUseTls}
         disabled={isSaving}
         accessibilityRole="checkbox"
-        accessibilityLabel="Use SSL"
+        accessibilityLabel={t("Use SSL")}
         accessibilityState={useTlsAccessibilityState}
         testID="direct-ssl-toggle"
       >
@@ -493,21 +495,21 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
             </View>
           ) : null}
         </View>
-        <Text style={styles.label}>Use SSL</Text>
+        <Text style={styles.label}>{t("Use SSL")}</Text>
       </Pressable>
 
       <View style={styles.field}>
-        <Text style={styles.label}>Password</Text>
+        <Text style={styles.label}>{t("Password")}</Text>
         <View style={styles.passwordRow}>
           <AdaptiveTextInput
             testID="direct-password-input"
             nativeID="direct-password-input"
-            accessibilityLabel="Password"
+            accessibilityLabel={t("Password")}
             initialValue={password}
             resetKey={`direct-password-${inputResetKey}`}
             value={password}
             onChangeText={setPassword}
-            placeholder="Optional"
+            placeholder={t("Optional")}
             placeholderTextColor={theme.colors.foregroundMuted}
             style={passwordInputStyle}
             autoCapitalize="none"
@@ -540,7 +542,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
           testID="direct-host-advanced-toggle"
         >
           <AdvancedIcon size={16} color={theme.colors.foregroundMuted} />
-          <Text style={styles.advancedText}>Advanced</Text>
+          <Text style={styles.advancedText}>{t("Advanced")}</Text>
         </Pressable>
         {isAdvancedOpen ? (
           <AdaptiveTextInput
@@ -572,7 +574,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
           onPress={handleCancel}
           disabled={isSaving}
         >
-          Cancel
+          {t("Cancel")}
         </Button>
         <Button
           style={FLEX_ONE_STYLE}
@@ -582,7 +584,7 @@ export function AddHostModal({ visible, onClose, onCancel, onSaved }: AddHostMod
           leftIcon={connectIcon}
           testID="direct-host-submit"
         >
-          {isSaving ? "Connecting..." : "Connect"}
+          {isSaving ? t("Connecting...") : t("Connect")}
         </Button>
       </View>
     </AdaptiveModalSheet>

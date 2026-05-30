@@ -77,6 +77,12 @@ import type {
   SessionInboundMessage,
   SessionOutboundMessage,
   SendAgentMessageRequest,
+  AgentInputQueueItem,
+  AgentInputQueueListResponse,
+  AgentInputQueueEnqueueResponse,
+  AgentInputQueueUpdateResponse,
+  AgentInputQueueRemoveResponse,
+  AgentInputQueueSendNowResponse,
   EditorTargetId,
   PaseoConfigRaw,
   PaseoConfigRevision,
@@ -193,6 +199,12 @@ export type DaemonEvent =
       seq?: number;
       epoch?: string;
     }
+  | {
+      type: "agent_input_queue_update";
+      agentId: string;
+      items: AgentInputQueueItem[];
+      payload: Extract<SessionOutboundMessage, { type: "agent.input_queue.update" }>["payload"];
+    }
   | { type: "status"; payload: { status: string } & Record<string, unknown> }
   | { type: "agent_deleted"; agentId: string }
   | {
@@ -244,6 +256,17 @@ export interface SendMessageOptions {
   messageId?: string;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: SendAgentMessageRequest["attachments"];
+}
+
+export interface AgentInputQueueMessageOptions {
+  messageId?: string;
+  images?: Array<{ data: string; mimeType: string }>;
+  attachments?: SendAgentMessageRequest["attachments"];
+  clientState?: unknown;
+}
+
+export interface AgentInputQueueUpdateOptions extends Partial<AgentInputQueueMessageOptions> {
+  text?: string;
 }
 
 type AgentConfigOverrides = Partial<Omit<AgentSessionConfig, "provider" | "cwd">>;
@@ -331,6 +354,11 @@ type RefreshProvidersSnapshotPayload = RefreshProvidersSnapshotResponseMessage["
 type ProviderDiagnosticPayload = ProviderDiagnosticResponseMessage["payload"];
 type DaemonStatusPayload = DaemonGetStatusResponse["payload"];
 type DaemonPairingOfferPayload = DaemonGetPairingOfferResponse["payload"];
+export type AgentInputQueueListPayload = AgentInputQueueListResponse["payload"];
+export type AgentInputQueueEnqueuePayload = AgentInputQueueEnqueueResponse["payload"];
+export type AgentInputQueueUpdatePayload = AgentInputQueueUpdateResponse["payload"];
+export type AgentInputQueueRemovePayload = AgentInputQueueRemoveResponse["payload"];
+export type AgentInputQueueSendNowPayload = AgentInputQueueSendNowResponse["payload"];
 type ReadProjectConfigPayload = Extract<
   SessionOutboundMessage,
   { type: "read_project_config_response" }
@@ -2259,6 +2287,108 @@ export class DaemonClient {
 
   async sendMessage(agentId: string, text: string, options?: SendMessageOptions): Promise<void> {
     await this.sendAgentMessage(agentId, text, options);
+  }
+
+  async listAgentInputQueue(agentId: string): Promise<AgentInputQueueListPayload> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.input_queue.list.response">({
+        message: {
+          type: "agent.input_queue.list.request",
+          agentId,
+        },
+        timeout: 15000,
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "listAgentInputQueue rejected");
+    }
+    return payload;
+  }
+
+  async enqueueAgentInputQueue(
+    agentId: string,
+    text: string,
+    options?: AgentInputQueueMessageOptions,
+  ): Promise<AgentInputQueueEnqueuePayload> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.input_queue.enqueue.response">({
+        message: {
+          type: "agent.input_queue.enqueue.request",
+          agentId,
+          text,
+          ...(options?.messageId ? { messageId: options.messageId } : {}),
+          ...(options?.images ? { images: options.images } : {}),
+          ...(options?.attachments ? { attachments: options.attachments } : {}),
+          ...(options && "clientState" in options ? { clientState: options.clientState } : {}),
+        },
+        timeout: 15000,
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "enqueueAgentInputQueue rejected");
+    }
+    return payload;
+  }
+
+  async updateAgentInputQueue(
+    agentId: string,
+    queueItemId: string,
+    options: AgentInputQueueUpdateOptions,
+  ): Promise<AgentInputQueueUpdatePayload> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.input_queue.update.response">({
+        message: {
+          type: "agent.input_queue.update.request",
+          agentId,
+          queueItemId,
+          ...(options.text !== undefined ? { text: options.text } : {}),
+          ...(options.messageId ? { messageId: options.messageId } : {}),
+          ...(options.images ? { images: options.images } : {}),
+          ...(options.attachments ? { attachments: options.attachments } : {}),
+          ...("clientState" in options ? { clientState: options.clientState } : {}),
+        },
+        timeout: 15000,
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "updateAgentInputQueue rejected");
+    }
+    return payload;
+  }
+
+  async removeAgentInputQueue(
+    agentId: string,
+    queueItemId: string,
+  ): Promise<AgentInputQueueRemovePayload> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.input_queue.remove.response">({
+        message: {
+          type: "agent.input_queue.remove.request",
+          agentId,
+          queueItemId,
+        },
+        timeout: 15000,
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "removeAgentInputQueue rejected");
+    }
+    return payload;
+  }
+
+  async sendAgentInputQueueNow(
+    agentId: string,
+    queueItemId: string,
+  ): Promise<AgentInputQueueSendNowPayload> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.input_queue.send_now.response">({
+        message: {
+          type: "agent.input_queue.send_now.request",
+          agentId,
+          queueItemId,
+        },
+        timeout: 15000,
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "sendAgentInputQueueNow rejected");
+    }
+    return payload;
   }
 
   async rewindAgent(
@@ -4305,6 +4435,7 @@ export class DaemonClient {
           capabilities: {
             [CLIENT_CAPS.customModeIcons]: true,
             [CLIENT_CAPS.reasoningMergeEnum]: true,
+            [CLIENT_CAPS.agentInputQueue]: true,
           },
           ...(this.config.appVersion ? { appVersion: this.config.appVersion } : {}),
         }),
@@ -4761,6 +4892,13 @@ export class DaemonClient {
           timestamp: msg.payload.timestamp,
           ...(typeof msg.payload.seq === "number" ? { seq: msg.payload.seq } : {}),
           ...(typeof msg.payload.epoch === "string" ? { epoch: msg.payload.epoch } : {}),
+        };
+      case "agent.input_queue.update":
+        return {
+          type: "agent_input_queue_update",
+          agentId: msg.payload.agentId,
+          items: msg.payload.items,
+          payload: msg.payload,
         };
       case "status":
         return { type: "status", payload: msg.payload };

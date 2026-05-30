@@ -775,7 +775,7 @@ function ChatAgentContent({
       if (!agentId) {
         return;
       }
-      ensureAgentIsInitialized(agentId).catch((error) => {
+      ensureAgentIsInitialized(agentId, { loadCompleteHistory: isNative }).catch((error) => {
         handleHistorySyncFailure({ origin, error });
       });
     },

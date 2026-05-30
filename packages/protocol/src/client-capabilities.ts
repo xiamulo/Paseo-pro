@@ -5,6 +5,8 @@ export const CLIENT_CAPS = {
   // outside the legacy set to "ShieldCheck" when this cap is absent. Drop the
   // gate when floor >= v0.1.84.
   customModeIcons: "custom_mode_icons",
+  // COMPAT(agentInputQueue): added in v0.1.88, remove gate after 2026-11-30.
+  agentInputQueue: "agent_input_queue",
 } as const;
 
 export type ClientCapability = (typeof CLIENT_CAPS)[keyof typeof CLIENT_CAPS];

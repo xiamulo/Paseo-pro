@@ -30,12 +30,13 @@ function makeDeps(
 }
 
 describe("loadAppSettingsFromStorage", () => {
-  it("defaults theme to auto when storage is empty", async () => {
+  it("defaults theme to auto and language to Chinese when storage is empty", async () => {
     const deps = makeDeps();
 
     const result = await loadAppSettingsFromStorage(deps);
 
     expect(result.theme).toBe("auto");
+    expect(result.language).toBe("zh-CN");
   });
 
   it("seeds storage with the client defaults when nothing is persisted", async () => {
@@ -59,6 +60,18 @@ describe("loadAppSettingsFromStorage", () => {
     const result = await loadAppSettingsFromStorage(deps);
 
     expect(result.terminalScrollbackLines).toBe(42_000);
+  });
+
+  it("loads configured language from app settings", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ language: "en" }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.language).toBe("en");
   });
 
   it("normalizes terminal scrollback lines from storage", async () => {
@@ -88,9 +101,11 @@ describe("loadAppSettingsFromStorage", () => {
 
     expect(result).toEqual({
       theme: "dark",
-      sendBehavior: "interrupt",
+      language: "zh-CN",
+      sendBehavior: "queue",
       serviceUrlBehavior: "ask",
       terminalScrollbackLines: 10_000,
+      androidBackgroundKeepalive: true,
     });
     expect(deps.storage.entries.get(APP_SETTINGS_KEY)).toBe(JSON.stringify(result));
   });
@@ -127,10 +142,12 @@ describe("loadSettingsFromStorage", () => {
 
     expect(result).toEqual({
       theme: "light",
+      language: "zh-CN",
       manageBuiltInDaemon: true,
-      sendBehavior: "interrupt",
+      sendBehavior: "queue",
       serviceUrlBehavior: "ask",
       terminalScrollbackLines: 10_000,
+      androidBackgroundKeepalive: true,
       releaseChannel: "stable",
     });
   });
@@ -173,9 +190,11 @@ describe("loadSettingsFromStorage", () => {
     ]);
     expect(result).toEqual({
       theme: "light",
-      sendBehavior: "interrupt",
+      language: "zh-CN",
+      sendBehavior: "queue",
       serviceUrlBehavior: "ask",
       terminalScrollbackLines: 10_000,
+      androidBackgroundKeepalive: true,
       manageBuiltInDaemon: false,
       releaseChannel: "beta",
     });
@@ -195,9 +214,11 @@ describe("loadSettingsFromStorage", () => {
     expect(desktop.migrationsApplied).toEqual([]);
     expect(result).toEqual({
       theme: "light",
-      sendBehavior: "interrupt",
+      language: "zh-CN",
+      sendBehavior: "queue",
       serviceUrlBehavior: "ask",
       terminalScrollbackLines: 10_000,
+      androidBackgroundKeepalive: true,
       manageBuiltInDaemon: true,
       releaseChannel: "stable",
     });
@@ -223,6 +244,28 @@ describe("saveAppSettings", () => {
       JSON.stringify({
         ...DEFAULT_CLIENT_SETTINGS,
         terminalScrollbackLines: 42_000,
+      }),
+    );
+  });
+
+  it("saves language through app settings persistence", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify(DEFAULT_CLIENT_SETTINGS),
+      }),
+    });
+    const queryClient = new QueryClient();
+
+    await saveAppSettings({
+      queryClient,
+      updates: { language: "en" },
+      deps,
+    });
+
+    expect(deps.storage.entries.get(APP_SETTINGS_KEY)).toBe(
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        language: "en",
       }),
     );
   });

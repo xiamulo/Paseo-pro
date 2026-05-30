@@ -66,6 +66,7 @@ import {
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
+import { useTranslation } from "@/i18n";
 
 const MIN_CHAT_WIDTH = 400;
 
@@ -125,6 +126,7 @@ export const LeftSidebar = memo(function LeftSidebar({
   void _selectedAgentId;
 
   const { theme } = useUnistyles();
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const isCompactLayout = useIsCompactFormFactor();
   const isOpen = usePanelStore((state) =>
@@ -139,10 +141,10 @@ export const LeftSidebar = memo(function LeftSidebar({
   );
   const activeServerId = activeDaemon?.serverId ?? null;
   const activeHostLabel = useMemo(() => {
-    if (!activeDaemon) return "No host";
+    if (!activeDaemon) return t("No host");
     const trimmed = activeDaemon.label?.trim();
     return trimmed && trimmed.length > 0 ? trimmed : activeDaemon.serverId;
-  }, [activeDaemon]);
+  }, [activeDaemon, t]);
   const activeHostSnapshot = useHostRuntimeSnapshot(activeServerId ?? "");
   const activeHostStatus = activeServerId
     ? (activeHostSnapshot?.connectionStatus ?? "connecting")
@@ -409,9 +411,10 @@ function AddProjectTooltipContent({
 }: {
   newAgentKeys: ReturnType<typeof useShortcutKeys>;
 }) {
+  const { t } = useTranslation();
   return (
     <View style={styles.tooltipRow}>
-      <Text style={styles.tooltipText}>Add project</Text>
+      <Text style={styles.tooltipText}>{t("Add project")}</Text>
       {newAgentKeys ? <Shortcut chord={newAgentKeys} /> : null}
     </View>
   );
@@ -447,6 +450,7 @@ function SidebarFooter({
   handleSettings: () => void;
 }) {
   const newAgentKeys = useShortcutKeys("new-agent");
+  const { t } = useTranslation();
   return (
     <View style={styles.sidebarFooter}>
       <View style={styles.footerHostSlot}>
@@ -464,7 +468,7 @@ function SidebarFooter({
             <FooterIconButton
               onPress={handleOpenProject}
               testID="sidebar-add-project"
-              accessibilityLabel="Add project"
+              accessibilityLabel={t("Add project")}
               icon={FolderPlus}
               theme={theme}
             />
@@ -476,14 +480,14 @@ function SidebarFooter({
         <FooterIconButton
           onPress={handleHome}
           testID="sidebar-home"
-          accessibilityLabel="Home"
+          accessibilityLabel={t("Home")}
           icon={Home}
           theme={theme}
         />
         <FooterIconButton
           onPress={handleSettings}
           testID="sidebar-settings"
-          accessibilityLabel="Settings"
+          accessibilityLabel={t("Settings")}
           icon={Settings}
           theme={theme}
         />
@@ -494,8 +498,8 @@ function SidebarFooter({
         onSelect={handleHostSelect}
         renderOption={renderHostOption}
         searchable={false}
-        title="Switch host"
-        searchPlaceholder="Search hosts..."
+        title={t("Switch host")}
+        searchPlaceholder={t("Search hosts...")}
         desktopMinWidth={280}
         open={isHostPickerOpen}
         onOpenChange={setIsHostPickerOpen}
@@ -534,6 +538,7 @@ function MobileSidebar({
   handleViewMoreNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
+  const { t } = useTranslation();
   const isSessionsActive = pathname.includes("/sessions");
   const {
     translateX,
@@ -700,7 +705,7 @@ function MobileSidebar({
           <View style={styles.sidebarContent} pointerEvents="auto">
             <SidebarHeaderRow
               icon={MessagesSquare}
-              label="Sessions"
+              label={t("Sessions")}
               onPress={handleViewMore}
               isActive={isSessionsActive}
               testID="sidebar-sessions"
@@ -791,6 +796,7 @@ function DesktopSidebar({
   handleViewMore,
 }: DesktopSidebarProps) {
   const pathname = usePathname();
+  const { t } = useTranslation();
   const isSessionsActive = pathname.includes("/sessions");
   const padding = useWindowControlsPadding("sidebar");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
@@ -862,7 +868,7 @@ function DesktopSidebar({
           {padding.top > 0 ? <View style={paddingTopSpacerStyle} /> : null}
           <SidebarHeaderRow
             icon={MessagesSquare}
-            label="Sessions"
+            label={t("Sessions")}
             onPress={handleViewMore}
             isActive={isSessionsActive}
             testID="sidebar-sessions"

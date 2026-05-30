@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalSto
 import type { ComponentType, ReactNode } from "react";
 import {
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -39,6 +40,7 @@ import {
   useAppSettings,
   useSettings,
   parseTerminalScrollbackLines,
+  type AppLanguage,
   type AppSettings,
   type SendBehavior,
   type ServiceUrlBehavior,
@@ -65,6 +67,7 @@ import { KeyboardShortcutsSection } from "@/screens/settings/keyboard-shortcuts-
 import { Button } from "@/components/ui/button";
 import { CommunityLinks } from "@/components/community-links";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -82,6 +85,7 @@ import { settingsStyles } from "@/styles/settings";
 import { THINKING_TONE_NATIVE_PCM_BASE64 } from "@/utils/thinking-tone.native-pcm";
 import { useVoiceAudioEngineOptional } from "@/contexts/voice-context";
 import { HostPage, HostRenameButton } from "@/screens/settings/host-page";
+import { AgentSection } from "@/screens/settings/agent-section";
 import ProjectsScreen from "@/screens/projects-screen";
 import ProjectSettingsScreen from "@/screens/project-settings-screen";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -95,6 +99,7 @@ import {
   type SettingsSectionSlug,
 } from "@/utils/host-routes";
 import { navigateToLastWorkspace } from "@/stores/navigation-active-workspace-store";
+import { useTranslation } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // View model
@@ -109,18 +114,18 @@ export type SettingsView =
 
 interface SidebarSectionItem {
   id: SettingsSectionSlug;
-  label: string;
+  labelKey: "General" | "Shortcuts" | "Integrations" | "Permissions" | "Diagnostics" | "About";
   icon: ComponentType<{ size: number; color: string }>;
   desktopOnly?: boolean;
 }
 
 const SIDEBAR_SECTION_ITEMS: SidebarSectionItem[] = [
-  { id: "general", label: "General", icon: Settings },
-  { id: "shortcuts", label: "Shortcuts", icon: Keyboard, desktopOnly: true },
-  { id: "integrations", label: "Integrations", icon: Puzzle, desktopOnly: true },
-  { id: "permissions", label: "Permissions", icon: Shield, desktopOnly: true },
-  { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
-  { id: "about", label: "About", icon: Info },
+  { id: "general", labelKey: "General", icon: Settings },
+  { id: "shortcuts", labelKey: "Shortcuts", icon: Keyboard, desktopOnly: true },
+  { id: "integrations", labelKey: "Integrations", icon: Puzzle, desktopOnly: true },
+  { id: "permissions", labelKey: "Permissions", icon: Shield, desktopOnly: true },
+  { id: "diagnostics", labelKey: "Diagnostics", icon: Stethoscope },
+  { id: "about", labelKey: "About", icon: Info },
 ];
 
 // ---------------------------------------------------------------------------
@@ -191,22 +196,6 @@ const THEME_LABELS: Record<AppSettings["theme"], string> = {
 
 const ROW_WITH_BORDER_STYLE = [settingsStyles.row, settingsStyles.rowBorder];
 
-const SEND_BEHAVIOR_OPTIONS = [
-  { value: "interrupt" as const, label: "Interrupt" },
-  { value: "queue" as const, label: "Queue" },
-];
-
-const RELEASE_CHANNEL_OPTIONS = [
-  { value: "stable" as const, label: "Stable" },
-  { value: "beta" as const, label: "Beta" },
-];
-
-const SERVICE_URL_BEHAVIOR_LABELS: Record<ServiceUrlBehavior, string> = {
-  ask: "Ask",
-  "in-app": "In Paseo",
-  external: "External browser",
-};
-
 const SERVICE_URL_BEHAVIOR_VALUES: ServiceUrlBehavior[] = ["ask", "in-app", "external"];
 
 // ---------------------------------------------------------------------------
@@ -217,7 +206,9 @@ interface GeneralSectionProps {
   settings: AppSettings;
   isDesktopApp: boolean;
   handleThemeChange: (theme: AppSettings["theme"]) => void;
+  handleLanguageChange: (language: AppLanguage) => void;
   handleSendBehaviorChange: (behavior: SendBehavior) => void;
+  handleAndroidBackgroundKeepaliveChange: (enabled: boolean) => void;
   handleServiceUrlBehaviorChange: (behavior: ServiceUrlBehavior) => void;
   handleTerminalScrollbackLinesChange: (lines: number) => void;
 }
@@ -253,12 +244,14 @@ function ThemeMenuItem({
 
 interface ServiceUrlBehaviorMenuItemProps {
   value: ServiceUrlBehavior;
+  label: string;
   selected: boolean;
   onChange: (value: ServiceUrlBehavior) => void;
 }
 
 function ServiceUrlBehaviorMenuItem({
   value,
+  label,
   selected,
   onChange,
 }: ServiceUrlBehaviorMenuItemProps) {
@@ -267,7 +260,7 @@ function ServiceUrlBehaviorMenuItem({
   }, [onChange, value]);
   return (
     <DropdownMenuItem selected={selected} onSelect={handleSelect}>
-      {SERVICE_URL_BEHAVIOR_LABELS[value]}
+      {label}
     </DropdownMenuItem>
   );
 }
@@ -276,11 +269,14 @@ function GeneralSection({
   settings,
   isDesktopApp,
   handleThemeChange,
+  handleLanguageChange,
   handleSendBehaviorChange,
+  handleAndroidBackgroundKeepaliveChange,
   handleServiceUrlBehaviorChange,
   handleTerminalScrollbackLinesChange,
 }: GeneralSectionProps) {
   const { theme } = useUnistyles();
+  const { t } = useTranslation();
   const iconSize = theme.iconSize.md;
   const iconColor = theme.colors.foregroundMuted;
   const [terminalScrollbackValue, setTerminalScrollbackValue] = useState(
@@ -308,12 +304,35 @@ function GeneralSection({
     setTerminalScrollbackValue(String(settings.terminalScrollbackLines));
   }, [settings.terminalScrollbackLines]);
 
+  const sendBehaviorOptions = useMemo(
+    () => [
+      { value: "interrupt" as const, label: t("Interrupt") },
+      { value: "queue" as const, label: t("Queue") },
+    ],
+    [t],
+  );
+  const languageOptions = useMemo(
+    () => [
+      { value: "zh-CN" as const, label: t("Chinese") },
+      { value: "en" as const, label: t("English") },
+    ],
+    [t],
+  );
+  const serviceUrlBehaviorLabels = useMemo<Record<ServiceUrlBehavior, string>>(
+    () => ({
+      ask: t("Ask"),
+      "in-app": t("In Paseo"),
+      external: t("External browser"),
+    }),
+    [t],
+  );
+
   return (
-    <SettingsSection title="General">
+    <SettingsSection title={t("General")}>
       <View style={settingsStyles.card}>
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>Theme</Text>
+            <Text style={settingsStyles.rowTitle}>{t("Theme")}</Text>
           </View>
           <DropdownMenu>
             <DropdownMenuTrigger style={themeTriggerStyle}>
@@ -322,22 +341,22 @@ function GeneralSection({
               <ChevronDown size={theme.iconSize.sm} color={iconColor} />
             </DropdownMenuTrigger>
             <DropdownMenuContent side="bottom" align="end" width={200}>
-              {(["light", "dark", "auto"] as const).map((t) => (
+              {(["light", "dark", "auto"] as const).map((themeName) => (
                 <ThemeMenuItem
-                  key={t}
-                  themeValue={t}
-                  selected={settings.theme === t}
+                  key={themeName}
+                  themeValue={themeName}
+                  selected={settings.theme === themeName}
                   iconSize={iconSize}
                   iconColor={iconColor}
                   onChange={handleThemeChange}
                 />
               ))}
               <DropdownMenuSeparator />
-              {(["zinc", "midnight", "claude", "ghostty"] as const).map((t) => (
+              {(["zinc", "midnight", "claude", "ghostty"] as const).map((themeName) => (
                 <ThemeMenuItem
-                  key={t}
-                  themeValue={t}
-                  selected={settings.theme === t}
+                  key={themeName}
+                  themeValue={themeName}
+                  selected={settings.theme === themeName}
                   iconSize={iconSize}
                   iconColor={iconColor}
                   onChange={handleThemeChange}
@@ -348,28 +367,59 @@ function GeneralSection({
         </View>
         <View style={ROW_WITH_BORDER_STYLE}>
           <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>Default send</Text>
+            <Text style={settingsStyles.rowTitle}>{t("Language")}</Text>
             <Text style={settingsStyles.rowHint}>
-              What happens when you press Enter while the agent is running
+              {t("Use Chinese by default, or switch back to the current English UI.")}
+            </Text>
+          </View>
+          <SegmentedControl
+            size="sm"
+            value={settings.language}
+            onValueChange={handleLanguageChange}
+            options={languageOptions}
+          />
+        </View>
+        <View style={ROW_WITH_BORDER_STYLE}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>{t("Default send")}</Text>
+            <Text style={settingsStyles.rowHint}>
+              {t("What happens when you press Enter while the agent is running")}
             </Text>
           </View>
           <SegmentedControl
             size="sm"
             value={settings.sendBehavior}
             onValueChange={handleSendBehaviorChange}
-            options={SEND_BEHAVIOR_OPTIONS}
+            options={sendBehaviorOptions}
           />
         </View>
+        {Platform.OS === "android" ? (
+          <View style={ROW_WITH_BORDER_STYLE}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>{t("Keep streaming in background")}</Text>
+              <Text style={settingsStyles.rowHint}>
+                {t("Show a persistent notification so Paseo can keep receiving agent output.")}
+              </Text>
+            </View>
+            <Switch
+              value={settings.androidBackgroundKeepalive}
+              onValueChange={handleAndroidBackgroundKeepaliveChange}
+              accessibilityLabel={t("Keep streaming in background")}
+            />
+          </View>
+        ) : null}
         {isDesktopApp ? (
           <View style={ROW_WITH_BORDER_STYLE}>
             <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>Service URLs</Text>
-              <Text style={settingsStyles.rowHint}>Where to open URLs from running scripts</Text>
+              <Text style={settingsStyles.rowTitle}>{t("Service URLs")}</Text>
+              <Text style={settingsStyles.rowHint}>
+                {t("Where to open URLs from running scripts")}
+              </Text>
             </View>
             <DropdownMenu>
               <DropdownMenuTrigger style={themeTriggerStyle}>
                 <Text style={styles.themeTriggerText}>
-                  {SERVICE_URL_BEHAVIOR_LABELS[settings.serviceUrlBehavior]}
+                  {serviceUrlBehaviorLabels[settings.serviceUrlBehavior]}
                 </Text>
                 <ChevronDown size={theme.iconSize.sm} color={iconColor} />
               </DropdownMenuTrigger>
@@ -378,6 +428,7 @@ function GeneralSection({
                   <ServiceUrlBehaviorMenuItem
                     key={value}
                     value={value}
+                    label={serviceUrlBehaviorLabels[value]}
                     selected={settings.serviceUrlBehavior === value}
                     onChange={handleServiceUrlBehaviorChange}
                   />
@@ -388,8 +439,10 @@ function GeneralSection({
         ) : null}
         <View style={ROW_WITH_BORDER_STYLE}>
           <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>Terminal scrollback</Text>
-            <Text style={settingsStyles.rowHint}>Lines kept in the built-in terminal buffer</Text>
+            <Text style={settingsStyles.rowTitle}>{t("Terminal scrollback")}</Text>
+            <Text style={settingsStyles.rowHint}>
+              {t("Lines kept in the built-in terminal buffer")}
+            </Text>
           </View>
           <TextInput
             value={terminalScrollbackValue}
@@ -400,7 +453,7 @@ function GeneralSection({
             inputMode="numeric"
             selectTextOnFocus
             style={styles.terminalScrollbackInput}
-            accessibilityLabel="Terminal scrollback lines"
+            accessibilityLabel={t("Terminal scrollback")}
           />
         </View>
       </View>
@@ -424,12 +477,13 @@ function DiagnosticsSection({
   const handlePlayPress = useCallback(() => {
     void handlePlaybackTest();
   }, [handlePlaybackTest]);
+  const { t } = useTranslation();
   return (
-    <SettingsSection title="Diagnostics">
+    <SettingsSection title={t("Diagnostics")}>
       <View style={settingsStyles.card}>
         <View style={settingsStyles.row}>
           <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>Test audio</Text>
+            <Text style={settingsStyles.rowTitle}>{t("Test audio")}</Text>
             {playbackTestResult ? (
               <Text style={settingsStyles.rowHint}>{playbackTestResult}</Text>
             ) : null}
@@ -440,7 +494,7 @@ function DiagnosticsSection({
             onPress={handlePlayPress}
             disabled={!voiceAudioEngine || isPlaybackTestRunning}
           >
-            {isPlaybackTestRunning ? "Playing..." : "Play test"}
+            {isPlaybackTestRunning ? t("Playing...") : t("Play test")}
           </Button>
         </View>
       </View>
@@ -455,14 +509,15 @@ interface AboutSectionProps {
 }
 
 function AboutSection({ appVersion, appVersionText, isDesktopApp }: AboutSectionProps) {
+  const { t } = useTranslation();
   return (
     <>
-      <SettingsSection title="About">
+      <SettingsSection title={t("About")}>
         <View style={settingsStyles.card}>
           <View style={settingsStyles.row}>
             <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>App version</Text>
-              <Text style={settingsStyles.rowHint}>This device</Text>
+              <Text style={settingsStyles.rowTitle}>{t("App version")}</Text>
+              <Text style={settingsStyles.rowHint}>{t("This device")}</Text>
             </View>
             <Text style={styles.aboutValue}>{appVersionText}</Text>
           </View>
@@ -485,11 +540,12 @@ function normalizeVersion(version: string | null | undefined): string | null {
 
 function ConnectedHostsSection({ clientVersion }: { clientVersion: string | null }) {
   const hosts = useHosts();
+  const { t } = useTranslation();
   if (hosts.length === 0) {
     return null;
   }
   return (
-    <SettingsSection title="Connected hosts">
+    <SettingsSection title={t("Connected hosts")}>
       <View style={settingsStyles.card}>
         {hosts.map((host, index) => (
           <HostVersionRow
@@ -514,6 +570,7 @@ function HostVersionRow({
   clientVersion: string | null;
 }) {
   const isConnected = useHostRuntimeIsConnected(host.serverId);
+  const { t } = useTranslation();
   const daemonVersion = useSessionStore(
     (state) => state.sessions[host.serverId]?.serverInfo?.version ?? null,
   );
@@ -549,7 +606,7 @@ function HostVersionRow({
           {host.label}
         </Text>
         {isMismatch ? (
-          <Text style={settingsStyles.rowHint}>Version differs from this device</Text>
+          <Text style={settingsStyles.rowHint}>{t("Version differs from this device")}</Text>
         ) : null}
       </View>
       <Text style={valueStyle}>{valueText}</Text>
@@ -560,10 +617,12 @@ function HostVersionRow({
 function getUpdateButtonLabel(
   isInstalling: boolean,
   latestVersion: string | null | undefined,
+  t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  if (isInstalling) return "Installing...";
-  if (latestVersion) return `Update to ${formatVersionWithPrefix(latestVersion)}`;
-  return "Update";
+  if (isInstalling) return t("Installing...");
+  if (latestVersion)
+    return t("Update to {version}", { version: formatVersionWithPrefix(latestVersion) });
+  return t("Update");
 }
 
 function DesktopAppUpdateRow() {
@@ -578,6 +637,14 @@ function DesktopAppUpdateRow() {
     checkForUpdates,
     installUpdate,
   } = useDesktopAppUpdater();
+  const { t } = useTranslation();
+  const releaseChannelOptions = useMemo(
+    () => [
+      { value: "stable" as const, label: t("Stable") },
+      { value: "beta" as const, label: t("Beta") },
+    ],
+    [t],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -609,10 +676,10 @@ function DesktopAppUpdateRow() {
     }
 
     void confirmDialog({
-      title: "Install desktop update",
-      message: "This updates Paseo on this computer",
-      confirmLabel: "Install update",
-      cancelLabel: "Cancel",
+      title: t("Install desktop update"),
+      message: t("This updates Paseo on this computer"),
+      confirmLabel: t("Install update"),
+      cancelLabel: t("Cancel"),
     })
       .then((confirmed) => {
         if (!confirmed) {
@@ -625,7 +692,7 @@ function DesktopAppUpdateRow() {
         console.error("[Settings] Failed to open app update confirmation", error);
         Alert.alert("Error", "Unable to open the update confirmation dialog.");
       });
-  }, [installUpdate, isDesktopApp]);
+  }, [installUpdate, isDesktopApp, t]);
 
   if (!isDesktopApp) {
     return null;
@@ -635,25 +702,27 @@ function DesktopAppUpdateRow() {
     <>
       <View style={ROW_WITH_BORDER_STYLE}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>Release channel</Text>
+          <Text style={settingsStyles.rowTitle}>{t("Release channel")}</Text>
           <Text style={settingsStyles.rowHint}>
-            Switch to Beta to get updates sooner and help shape them
+            {t("Switch to Beta to get updates sooner and help shape them")}
           </Text>
         </View>
         <SegmentedControl
           size="sm"
           value={settings.releaseChannel}
           onValueChange={handleReleaseChannelChange}
-          options={RELEASE_CHANNEL_OPTIONS}
+          options={releaseChannelOptions}
         />
       </View>
       <View style={ROW_WITH_BORDER_STYLE}>
         <View style={settingsStyles.rowContent}>
-          <Text style={settingsStyles.rowTitle}>App updates</Text>
+          <Text style={settingsStyles.rowTitle}>{t("App updates")}</Text>
           <Text style={settingsStyles.rowHint}>{statusText}</Text>
           {availableUpdate?.latestVersion ? (
             <Text style={settingsStyles.rowHint}>
-              Ready to install: {formatVersionWithPrefix(availableUpdate.latestVersion)}
+              {t("Ready to install: {version}", {
+                version: formatVersionWithPrefix(availableUpdate.latestVersion),
+              })}
             </Text>
           ) : null}
           {errorMessage ? <Text style={styles.aboutErrorText}>{errorMessage}</Text> : null}
@@ -665,7 +734,7 @@ function DesktopAppUpdateRow() {
             onPress={handleCheckForUpdates}
             disabled={isChecking || isInstalling}
           >
-            {isChecking ? "Checking..." : "Check"}
+            {isChecking ? t("Checking...") : t("Check")}
           </Button>
           <Button
             variant="default"
@@ -673,7 +742,7 @@ function DesktopAppUpdateRow() {
             onPress={handleInstallUpdate}
             disabled={isChecking || isInstalling || !availableUpdate}
           >
-            {getUpdateButtonLabel(isInstalling, availableUpdate?.latestVersion)}
+            {getUpdateButtonLabel(isInstalling, availableUpdate?.latestVersion, t)}
           </Button>
         </View>
       </View>
@@ -844,6 +913,7 @@ function SettingsSidebar({
   layout,
 }: SettingsSidebarProps) {
   const { theme } = useUnistyles();
+  const { t } = useTranslation();
   const hosts = useHosts();
   const localServerId = useLocalDaemonServerId();
   const sortedHosts = useMemo(() => {
@@ -887,7 +957,7 @@ function SettingsSidebar({
       {isDesktop ? (
         <SidebarHeaderRow
           icon={ArrowLeft}
-          label="Back"
+          label={t("Back")}
           onPress={onBackToWorkspace}
           testID="settings-back-to-workspace"
         />
@@ -897,7 +967,7 @@ function SettingsSidebar({
           <Fragment key={item.id}>
             <SidebarSectionButton
               itemId={item.id}
-              label={item.label}
+              label={t(item.labelKey)}
               icon={item.icon}
               isSelected={selectedSectionId === item.id}
               onSelect={onSelectSection}
@@ -922,14 +992,14 @@ function SettingsSidebar({
         ))}
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Add host"
+          accessibilityLabel={t("Add host")}
           onPress={onAddHost}
           testID="settings-add-host"
           style={sidebarItemStyle}
         >
           <Plus size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
           <Text style={sidebarStyles.label} numberOfLines={1}>
-            Add host
+            {t("Add host")}
           </Text>
         </Pressable>
       </View>
@@ -948,6 +1018,7 @@ export interface SettingsScreenProps {
 export default function SettingsScreen({ view }: SettingsScreenProps) {
   const router = useRouter();
   const { theme } = useUnistyles();
+  const { t } = useTranslation();
   const voiceAudioEngine = useVoiceAudioEngineOptional();
   const { settings, isLoading: settingsLoading, updateSettings } = useAppSettings();
   const [isAddHostMethodVisible, setIsAddHostMethodVisible] = useState(false);
@@ -977,9 +1048,23 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
     [updateSettings],
   );
 
+  const handleLanguageChange = useCallback(
+    (language: AppLanguage) => {
+      void updateSettings({ language });
+    },
+    [updateSettings],
+  );
+
   const handleSendBehaviorChange = useCallback(
     (behavior: SendBehavior) => {
       void updateSettings({ sendBehavior: behavior });
+    },
+    [updateSettings],
+  );
+
+  const handleAndroidBackgroundKeepaliveChange = useCallback(
+    (androidBackgroundKeepalive: boolean) => {
+      void updateSettings({ androidBackgroundKeepalive });
     },
     [updateSettings],
   );
@@ -1151,10 +1236,10 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
     if (view.kind === "section") {
       const item = SIDEBAR_SECTION_ITEMS.find((s) => s.id === view.section);
       if (!item) return null;
-      return { title: item.label, Icon: item.icon };
+      return { title: t(item.labelKey), Icon: item.icon };
     }
     if (view.kind === "project" || view.kind === "projects") {
-      return { title: "Projects", Icon: FolderGit2 };
+      return { title: t("Projects"), Icon: FolderGit2 };
     }
     return null;
   })();
@@ -1173,14 +1258,19 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
       switch (view.section) {
         case "general":
           return (
-            <GeneralSection
-              settings={settings}
-              isDesktopApp={isDesktopApp}
-              handleThemeChange={handleThemeChange}
-              handleSendBehaviorChange={handleSendBehaviorChange}
-              handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
-              handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
-            />
+            <>
+              <AgentSection serverId={anyOnlineServerId} />
+              <GeneralSection
+                settings={settings}
+                isDesktopApp={isDesktopApp}
+                handleThemeChange={handleThemeChange}
+                handleLanguageChange={handleLanguageChange}
+                handleSendBehaviorChange={handleSendBehaviorChange}
+                handleAndroidBackgroundKeepaliveChange={handleAndroidBackgroundKeepaliveChange}
+                handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
+                handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
+              />
+            </>
           );
         case "shortcuts":
           return isDesktopApp ? <KeyboardShortcutsSection /> : null;
@@ -1213,7 +1303,7 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
   if (settingsLoading) {
     return (
       <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>Loading settings...</Text>
+        <Text style={styles.loadingText}>{t("Loading settings...")}</Text>
       </View>
     );
   }
@@ -1246,7 +1336,7 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
   if (isCompactLayout && view.kind === "root") {
     return (
       <View style={styles.container}>
-        <BackHeader title="Settings" onBack={handleBackToWorkspace} />
+        <BackHeader title={t("Settings")} onBack={handleBackToWorkspace} />
         <ScrollView style={scrollViewStyle} contentContainerStyle={insetBottomStyle}>
           <SettingsSidebar
             view={view}

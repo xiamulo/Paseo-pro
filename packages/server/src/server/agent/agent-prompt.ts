@@ -302,6 +302,10 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
         return;
       }
 
+      if (event.type !== "agent_stream") {
+        return;
+      }
+
       if (event.event.type === "permission_requested") {
         void notify("needs permission");
       }

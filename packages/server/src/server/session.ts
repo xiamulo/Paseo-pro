@@ -1325,6 +1325,19 @@ export class Session {
           return;
         }
 
+        if (event.type === "agent_input_queue") {
+          if (this.supports(CLIENT_CAPS.agentInputQueue)) {
+            this.emit({
+              type: "agent.input_queue.update",
+              payload: {
+                agentId: event.agentId,
+                items: event.items,
+              },
+            });
+          }
+          return;
+        }
+
         if (
           this.isVoiceMode &&
           this.voiceModeAgentId === event.agentId &&
@@ -1753,6 +1766,7 @@ export class Session {
     const promise =
       this.dispatchVoiceAndControlMessage(msg) ??
       this.dispatchAgentRewindMessage(msg) ??
+      this.dispatchAgentInputQueueMessage(msg) ??
       this.dispatchAgentLifecycleMessage(msg) ??
       this.dispatchAgentSearchMessage(msg) ??
       this.dispatchAgentConfigMessage(msg) ??
@@ -1884,6 +1898,23 @@ export class Session {
         return this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchAgentInputQueueMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "agent.input_queue.list.request":
+        return this.handleAgentInputQueueListRequest(msg);
+      case "agent.input_queue.enqueue.request":
+        return this.handleAgentInputQueueEnqueueRequest(msg);
+      case "agent.input_queue.update.request":
+        return this.handleAgentInputQueueUpdateRequest(msg);
+      case "agent.input_queue.remove.request":
+        return this.handleAgentInputQueueRemoveRequest(msg);
+      case "agent.input_queue.send_now.request":
+        return this.handleAgentInputQueueSendNowRequest(msg);
       default:
         return undefined;
     }
@@ -7925,6 +7956,291 @@ export class Session {
           agentId: resolved.agentId,
           accepted: false,
           error: errorToFriendlyMessage(error),
+        },
+      });
+    }
+  }
+
+  private async handleAgentInputQueueListRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.input_queue.list.request" }>,
+  ): Promise<void> {
+    const resolved = await this.resolveAgentIdentifier(msg.agentId);
+    if (!resolved.ok) {
+      this.emit({
+        type: "agent.input_queue.list.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          items: [],
+          accepted: false,
+          error: resolved.error,
+        },
+      });
+      return;
+    }
+
+    try {
+      const items = await this.agentManager.listInputQueue(resolved.agentId);
+      this.emit({
+        type: "agent.input_queue.list.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.input_queue.list.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items: [],
+          accepted: false,
+          error: errorToFriendlyMessage(error),
+        },
+      });
+    }
+  }
+
+  private async handleAgentInputQueueEnqueueRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.input_queue.enqueue.request" }>,
+  ): Promise<void> {
+    const resolved = await this.resolveAgentIdentifier(msg.agentId);
+    if (!resolved.ok) {
+      this.emit({
+        type: "agent.input_queue.enqueue.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          items: [],
+          accepted: false,
+          error: resolved.error,
+          item: null,
+        },
+      });
+      return;
+    }
+
+    try {
+      const { item, items } = await this.agentManager.enqueueInputQueue({
+        agentId: resolved.agentId,
+        text: msg.text,
+        messageId: msg.messageId,
+        images: msg.images ?? [],
+        attachments: msg.attachments ?? [],
+        clientState: msg.clientState,
+        sourceClientId: this.clientId,
+      });
+      this.emit({
+        type: "agent.input_queue.enqueue.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: true,
+          error: null,
+          item,
+        },
+      });
+    } catch (error) {
+      const items = await this.agentManager.listInputQueue(resolved.agentId).catch(() => []);
+      this.emit({
+        type: "agent.input_queue.enqueue.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: false,
+          error: errorToFriendlyMessage(error),
+          item: null,
+        },
+      });
+    }
+  }
+
+  private async handleAgentInputQueueUpdateRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.input_queue.update.request" }>,
+  ): Promise<void> {
+    const resolved = await this.resolveAgentIdentifier(msg.agentId);
+    if (!resolved.ok) {
+      this.emit({
+        type: "agent.input_queue.update.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          items: [],
+          accepted: false,
+          error: resolved.error,
+          item: null,
+        },
+      });
+      return;
+    }
+
+    try {
+      const { item, items } = await this.agentManager.updateInputQueueItem({
+        agentId: resolved.agentId,
+        queueItemId: msg.queueItemId,
+        text: msg.text,
+        messageId: msg.messageId,
+        images: msg.images,
+        attachments: msg.attachments,
+        clientState: msg.clientState,
+      });
+      this.emit({
+        type: "agent.input_queue.update.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: true,
+          error: null,
+          item,
+        },
+      });
+    } catch (error) {
+      const items = await this.agentManager.listInputQueue(resolved.agentId).catch(() => []);
+      this.emit({
+        type: "agent.input_queue.update.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: false,
+          error: errorToFriendlyMessage(error),
+          item: null,
+        },
+      });
+    }
+  }
+
+  private async handleAgentInputQueueRemoveRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.input_queue.remove.request" }>,
+  ): Promise<void> {
+    const resolved = await this.resolveAgentIdentifier(msg.agentId);
+    if (!resolved.ok) {
+      this.emit({
+        type: "agent.input_queue.remove.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          items: [],
+          accepted: false,
+          error: resolved.error,
+        },
+      });
+      return;
+    }
+
+    try {
+      const { items } = await this.agentManager.removeInputQueueItem({
+        agentId: resolved.agentId,
+        queueItemId: msg.queueItemId,
+      });
+      this.emit({
+        type: "agent.input_queue.remove.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      const items = await this.agentManager.listInputQueue(resolved.agentId).catch(() => []);
+      this.emit({
+        type: "agent.input_queue.remove.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: resolved.agentId,
+          items,
+          accepted: false,
+          error: errorToFriendlyMessage(error),
+        },
+      });
+    }
+  }
+
+  private async handleAgentInputQueueSendNowRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.input_queue.send_now.request" }>,
+  ): Promise<void> {
+    const resolved = await this.resolveAgentIdentifier(msg.agentId);
+    if (!resolved.ok) {
+      this.emit({
+        type: "agent.input_queue.send_now.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          items: [],
+          accepted: false,
+          error: resolved.error,
+          sentItemId: null,
+        },
+      });
+      return;
+    }
+
+    const agentId = resolved.agentId;
+    let removed: Awaited<ReturnType<AgentManager["removeInputQueueItem"]>> | null = null;
+    try {
+      removed = await this.agentManager.removeInputQueueItem({
+        agentId,
+        queueItemId: msg.queueItemId,
+      });
+      const prompt = this.buildAgentPrompt(
+        removed.item.text,
+        removed.item.images,
+        removed.item.attachments,
+      );
+      const dispatchResult = await sendPromptToAgent({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId,
+        prompt,
+        messageId: removed.item.messageId,
+        logger: this.sessionLogger,
+      });
+      if (!dispatchResult.outOfBand) {
+        await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
+      }
+      const items = await this.agentManager.listInputQueue(agentId);
+      this.emit({
+        type: "agent.input_queue.send_now.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId,
+          items,
+          accepted: true,
+          error: null,
+          sentItemId: removed.item.id,
+        },
+      });
+    } catch (error) {
+      if (removed) {
+        await this.agentManager
+          .prependInputQueueItem(agentId, removed.item)
+          .catch((restoreError) => {
+            this.sessionLogger.error(
+              { err: restoreError, agentId, queueItemId: msg.queueItemId },
+              "Failed to restore queued message after send_now failure",
+            );
+          });
+      }
+      this.handleAgentRunError(agentId, error, "Failed to send queued agent message");
+      const items = await this.agentManager.listInputQueue(agentId).catch(() => []);
+      this.emit({
+        type: "agent.input_queue.send_now.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId,
+          items,
+          accepted: false,
+          error: errorToFriendlyMessage(error),
+          sentItemId: null,
         },
       });
     }

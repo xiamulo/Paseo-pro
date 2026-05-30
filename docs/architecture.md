@@ -225,6 +225,7 @@ initializing → idle ⇄ running
 - Timeline row `timestamp` values are canonical daemon-owned timestamps. Providers may supply original replay timestamps, but clients must not guess timestamp trust or hide time UI based on local clock heuristics.
 - Events stream to all connected clients in real time. Do not filter `agent_stream` by client focus, visibility, or device type on the daemon; cross-client and cross-process streaming depends on global fanout. Clients can choose what to render and can use timeline fetches for reconnect catch-up, but live event delivery stays broad.
 - Agent state persists to `$PASEO_HOME/agents/{cwd-with-dashes}/{agent-id}.json` (timeline rows live alongside the record)
+- The agent input queue is daemon-owned state stored on the agent record. Clients enqueue through `agent.input_queue.*` RPCs; the daemon broadcasts `agent.input_queue.update` only to clients advertising `agent_input_queue`, and drains the next queued prompt when a running agent returns to `idle`.
 
 ## Agent providers
 
