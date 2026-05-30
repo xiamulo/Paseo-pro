@@ -13,6 +13,8 @@ import { runSupervisor } from "./supervisor.js";
 import { resolveSupervisorLogFile } from "./supervisor-log-config.js";
 import { applySherpaLoaderEnv } from "../src/server/speech/providers/local/sherpa/sherpa-runtime-env.js";
 
+process.title = "Paseo Supervisor";
+
 interface DaemonRunnerConfig {
   devMode: boolean;
   workerArgs: string[];
@@ -58,8 +60,22 @@ function resolveDevWorkerEntry(): string {
   return candidate;
 }
 
-function resolveWorkerExecArgv(workerEntry: string): string[] {
-  return workerEntry.endsWith(".ts") ? ["--import", "tsx"] : [];
+function resolveWorkerExecArgv(workerEntry: string, devMode: boolean): string[] {
+  const execArgv = workerEntry.endsWith(".ts") ? ["--import", "tsx"] : [];
+  if (!devMode) {
+    return execArgv;
+  }
+  const devArgs = [
+    "--heapsnapshot-near-heap-limit=3",
+    "--max-old-space-size=3072",
+    "--report-on-fatalerror",
+    "--report-directory=/tmp/paseo-reports",
+  ];
+  const inspectArg = process.env.PASEO_NODE_INSPECT ?? "--inspect";
+  if (inspectArg !== "0" && inspectArg !== "false" && inspectArg !== "off") {
+    devArgs.push(inspectArg);
+  }
+  return [...devArgs, ...execArgv];
 }
 
 function resolvePackagedNodeEntrypointRunnerPath(currentScriptPath: string): string | null {
@@ -77,7 +93,7 @@ function resolvePackagedNodeEntrypointRunnerPath(currentScriptPath: string): str
 async function main(): Promise<void> {
   const config = parseConfig(process.argv.slice(2));
   const workerEntry = config.devMode ? resolveDevWorkerEntry() : resolveWorkerEntry();
-  const workerExecArgv = resolveWorkerExecArgv(workerEntry);
+  const workerExecArgv = resolveWorkerExecArgv(workerEntry, config.devMode);
   const workerEnv: NodeJS.ProcessEnv = { ...process.env };
   const packagedNodeEntrypointRunner =
     process.env.ELECTRON_RUN_AS_NODE === "1"

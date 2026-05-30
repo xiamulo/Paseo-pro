@@ -25,6 +25,7 @@ import { Route as KimiRouteImport } from "./routes/kimi";
 import { Route as KiloRouteImport } from "./routes/kilo";
 import { Route as JunieRouteImport } from "./routes/junie";
 import { Route as HermesRouteImport } from "./routes/hermes";
+import { Route as GrokRouteImport } from "./routes/grok";
 import { Route as GooseRouteImport } from "./routes/goose";
 import { Route as GlmRouteImport } from "./routes/glm";
 import { Route as GeminiRouteImport } from "./routes/gemini";
@@ -34,6 +35,7 @@ import { Route as DownloadRouteImport } from "./routes/download";
 import { Route as DocsRouteImport } from "./routes/docs";
 import { Route as DiracRouteImport } from "./routes/dirac";
 import { Route as DimcodeRouteImport } from "./routes/dimcode";
+import { Route as DeepseekTuiRouteImport } from "./routes/deepseek-tui";
 import { Route as DeepagentsRouteImport } from "./routes/deepagents";
 import { Route as CursorRouteImport } from "./routes/cursor";
 import { Route as CrowRouteImport } from "./routes/crow";
@@ -138,6 +140,11 @@ const HermesRoute = HermesRouteImport.update({
   path: "/hermes",
   getParentRoute: () => rootRouteImport,
 } as any);
+const GrokRoute = GrokRouteImport.update({
+  id: "/grok",
+  path: "/grok",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const GooseRoute = GooseRouteImport.update({
   id: "/goose",
   path: "/goose",
@@ -181,6 +188,11 @@ const DiracRoute = DiracRouteImport.update({
 const DimcodeRoute = DimcodeRouteImport.update({
   id: "/dimcode",
   path: "/dimcode",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const DeepseekTuiRoute = DeepseekTuiRouteImport.update({
+  id: "/deepseek-tui",
+  path: "/deepseek-tui",
   getParentRoute: () => rootRouteImport,
 } as any);
 const DeepagentsRoute = DeepagentsRouteImport.update({
@@ -319,6 +331,7 @@ export interface FileRoutesByFullPath {
   "/crow": typeof CrowRoute;
   "/cursor": typeof CursorRoute;
   "/deepagents": typeof DeepagentsRoute;
+  "/deepseek-tui": typeof DeepseekTuiRoute;
   "/dimcode": typeof DimcodeRoute;
   "/dirac": typeof DiracRoute;
   "/docs": typeof DocsRouteWithChildren;
@@ -328,6 +341,7 @@ export interface FileRoutesByFullPath {
   "/gemini": typeof GeminiRoute;
   "/glm": typeof GlmRoute;
   "/goose": typeof GooseRoute;
+  "/grok": typeof GrokRoute;
   "/hermes": typeof HermesRoute;
   "/junie": typeof JunieRoute;
   "/kilo": typeof KiloRoute;
@@ -368,6 +382,7 @@ export interface FileRoutesByTo {
   "/crow": typeof CrowRoute;
   "/cursor": typeof CursorRoute;
   "/deepagents": typeof DeepagentsRoute;
+  "/deepseek-tui": typeof DeepseekTuiRoute;
   "/dimcode": typeof DimcodeRoute;
   "/dirac": typeof DiracRoute;
   "/download": typeof DownloadRoute;
@@ -376,6 +391,7 @@ export interface FileRoutesByTo {
   "/gemini": typeof GeminiRoute;
   "/glm": typeof GlmRoute;
   "/goose": typeof GooseRoute;
+  "/grok": typeof GrokRoute;
   "/hermes": typeof HermesRoute;
   "/junie": typeof JunieRoute;
   "/kilo": typeof KiloRoute;
@@ -418,6 +434,7 @@ export interface FileRoutesById {
   "/crow": typeof CrowRoute;
   "/cursor": typeof CursorRoute;
   "/deepagents": typeof DeepagentsRoute;
+  "/deepseek-tui": typeof DeepseekTuiRoute;
   "/dimcode": typeof DimcodeRoute;
   "/dirac": typeof DiracRoute;
   "/docs": typeof DocsRouteWithChildren;
@@ -427,6 +444,7 @@ export interface FileRoutesById {
   "/gemini": typeof GeminiRoute;
   "/glm": typeof GlmRoute;
   "/goose": typeof GooseRoute;
+  "/grok": typeof GrokRoute;
   "/hermes": typeof HermesRoute;
   "/junie": typeof JunieRoute;
   "/kilo": typeof KiloRoute;
@@ -470,6 +488,7 @@ export interface FileRouteTypes {
     | "/crow"
     | "/cursor"
     | "/deepagents"
+    | "/deepseek-tui"
     | "/dimcode"
     | "/dirac"
     | "/docs"
@@ -479,6 +498,7 @@ export interface FileRouteTypes {
     | "/gemini"
     | "/glm"
     | "/goose"
+    | "/grok"
     | "/hermes"
     | "/junie"
     | "/kilo"
@@ -519,6 +539,7 @@ export interface FileRouteTypes {
     | "/crow"
     | "/cursor"
     | "/deepagents"
+    | "/deepseek-tui"
     | "/dimcode"
     | "/dirac"
     | "/download"
@@ -527,6 +548,7 @@ export interface FileRouteTypes {
     | "/gemini"
     | "/glm"
     | "/goose"
+    | "/grok"
     | "/hermes"
     | "/junie"
     | "/kilo"
@@ -568,6 +590,7 @@ export interface FileRouteTypes {
     | "/crow"
     | "/cursor"
     | "/deepagents"
+    | "/deepseek-tui"
     | "/dimcode"
     | "/dirac"
     | "/docs"
@@ -577,6 +600,7 @@ export interface FileRouteTypes {
     | "/gemini"
     | "/glm"
     | "/goose"
+    | "/grok"
     | "/hermes"
     | "/junie"
     | "/kilo"
@@ -619,6 +643,7 @@ export interface RootRouteChildren {
   CrowRoute: typeof CrowRoute;
   CursorRoute: typeof CursorRoute;
   DeepagentsRoute: typeof DeepagentsRoute;
+  DeepseekTuiRoute: typeof DeepseekTuiRoute;
   DimcodeRoute: typeof DimcodeRoute;
   DiracRoute: typeof DiracRoute;
   DocsRoute: typeof DocsRouteWithChildren;
@@ -628,6 +653,7 @@ export interface RootRouteChildren {
   GeminiRoute: typeof GeminiRoute;
   GlmRoute: typeof GlmRoute;
   GooseRoute: typeof GooseRoute;
+  GrokRoute: typeof GrokRoute;
   HermesRoute: typeof HermesRoute;
   JunieRoute: typeof JunieRoute;
   KiloRoute: typeof KiloRoute;
@@ -760,6 +786,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof HermesRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/grok": {
+      id: "/grok";
+      path: "/grok";
+      fullPath: "/grok";
+      preLoaderRoute: typeof GrokRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/goose": {
       id: "/goose";
       path: "/goose";
@@ -821,6 +854,13 @@ declare module "@tanstack/react-router" {
       path: "/dimcode";
       fullPath: "/dimcode";
       preLoaderRoute: typeof DimcodeRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/deepseek-tui": {
+      id: "/deepseek-tui";
+      path: "/deepseek-tui";
+      fullPath: "/deepseek-tui";
+      preLoaderRoute: typeof DeepseekTuiRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/deepagents": {
@@ -1031,6 +1071,7 @@ const rootRouteChildren: RootRouteChildren = {
   CrowRoute: CrowRoute,
   CursorRoute: CursorRoute,
   DeepagentsRoute: DeepagentsRoute,
+  DeepseekTuiRoute: DeepseekTuiRoute,
   DimcodeRoute: DimcodeRoute,
   DiracRoute: DiracRoute,
   DocsRoute: DocsRouteWithChildren,
@@ -1040,6 +1081,7 @@ const rootRouteChildren: RootRouteChildren = {
   GeminiRoute: GeminiRoute,
   GlmRoute: GlmRoute,
   GooseRoute: GooseRoute,
+  GrokRoute: GrokRoute,
   HermesRoute: HermesRoute,
   JunieRoute: JunieRoute,
   KiloRoute: KiloRoute,

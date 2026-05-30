@@ -10,6 +10,7 @@ import {
   ViewStyle,
   type TextStyle,
 } from "react-native";
+import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-text";
 import * as React from "react";
 import {
   useState,
@@ -49,7 +50,7 @@ import {
   FileSymlink,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { SPACING, type Theme } from "@/styles/theme";
+import { type Theme } from "@/styles/theme";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import Animated, {
   Easing,
@@ -62,18 +63,18 @@ import Animated, {
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { createMarkdownStyles } from "@/styles/markdown-styles";
 import { Fonts } from "@/constants/theme";
-import * as Clipboard from "expo-clipboard";
 import type { TodoEntry, UserMessageImageAttachment } from "@/types/stream";
-import type { AgentAttachment } from "@server/shared/messages";
-import type { ToolCallDetail } from "@server/server/agent/agent-sdk-types";
+import type { AgentAttachment } from "@getpaseo/protocol/messages";
+import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { buildToolCallPresentation } from "@/tool-calls/presentation";
 import { resolveToolCallIcon } from "@/utils/tool-call-icon";
-import type { OpenFileDisposition } from "@/workspace/file-open";
-import { getMarkdownListMarker, getMarkdownNextSiblingType } from "@/utils/markdown-list";
-import type { ToastApi } from "@/components/toast-host";
+import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-list";
+import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
+import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
+import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
 import {
   getAssistantImageLoadStateFromMetadata,
   getAssistantImageMetadata,
@@ -91,35 +92,35 @@ import { PlanCard } from "./plan-card";
 import { useToolCallSheet } from "./tool-call-sheet";
 import { ToolCallDetailsContent } from "./tool-call-details";
 import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import { useToast } from "@/contexts/toast-context";
-import {
   AssistantInlineCodePathLink,
-  classifyAssistantFileLink,
   type AssistantFileLinkSource,
   AssistantMarkdownCodeLink,
   AssistantMarkdownLink,
   type InlinePathTarget,
-  useAssistantFileLinkResolver,
+  useAssistantFileLinkActions,
 } from "@/assistant-file-links";
 import { getCompactionMarkerLabel } from "./message-compaction-label";
 import { useAttachmentPreviewUrl } from "@/attachments/use-attachment-preview-url";
 import { persistAttachmentFromBytes, persistAttachmentFromDataUrl } from "@/attachments/service";
-import type { DaemonClient } from "@server/client/daemon-client";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { isWeb, isNative } from "@/constants/platform";
+import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
+import { RewindMenu, type RewindMode } from "@/components/rewind/rewind-menu";
+import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mutation";
 export type { InlinePathTarget } from "@/assistant-file-links";
 
 type MarkdownStyles = Record<string, TextStyle & ViewStyle & { [key: string]: unknown }>;
 
 interface UserMessageProps {
+  serverId?: string;
+  agentId?: string;
+  messageId?: string;
   message: string;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
   timestamp: number;
+  capabilities?: AgentCapabilityFlags;
+  client?: DaemonClient | null;
   isFirstInGroup?: boolean;
   isLastInGroup?: boolean;
   disableOuterSpacing?: boolean;
@@ -174,7 +175,6 @@ const markdownStyleMapping = (theme: Theme): Partial<MarkdownWithStableRendererP
 });
 
 const ThemedMicVocal = withUnistyles(MicVocal);
-const ThemedCopy = withUnistyles(Copy);
 const ThemedTodoCheckIcon = withUnistyles(Check);
 const ThemedFileSymlinkIcon = withUnistyles(FileSymlink);
 const ThemedTriangleAlertIcon = withUnistyles(TriangleAlertIcon);
@@ -334,88 +334,6 @@ function shouldStopDetailWheelPropagation(detailRoot: HTMLElement, event: WheelE
   return canScrollHorizontally;
 }
 
-function isCopyableText(text: string): boolean {
-  return text.trim().length > 0;
-}
-
-function useCopyToClipboard(): (text: string, label?: string) => void {
-  const toast = useToast();
-  return useCallback(
-    (text: string, label?: string) => {
-      if (!isCopyableText(text)) {
-        return;
-      }
-      void Clipboard.setStringAsync(text).then(
-        () => toast.copied(label),
-        () => toast.error("Couldn't copy to clipboard"),
-      );
-    },
-    [toast],
-  );
-}
-
-interface LongPressCopyMenuProps {
-  getContent: () => string;
-  enabled?: boolean;
-  copyLabel?: string;
-  testID?: string;
-  children: ReactNode;
-}
-
-const longPressCopyMenuStylesheet = StyleSheet.create({
-  trigger: {
-    minWidth: 0,
-    flexShrink: 1,
-    ...(isWeb ? { userSelect: "text" as const } : {}),
-  },
-});
-
-const LongPressCopyMenuItemIcon = <ThemedCopy size={16} uniProps={foregroundMutedColorMapping} />;
-
-const LongPressCopyMenu = memo(function LongPressCopyMenu({
-  getContent,
-  enabled = true,
-  copyLabel,
-  testID,
-  children,
-}: LongPressCopyMenuProps) {
-  const content = getContent();
-  const isEnabled = enabled && isCopyableText(content);
-  const copyToClipboard = useCopyToClipboard();
-  const handleCopy = useCallback(() => {
-    copyToClipboard(getContent(), copyLabel);
-  }, [copyToClipboard, copyLabel, getContent]);
-
-  if (!isEnabled) {
-    return <View style={longPressCopyMenuStylesheet.trigger}>{children}</View>;
-  }
-
-  if (!isWeb) {
-    return <View style={longPressCopyMenuStylesheet.trigger}>{children}</View>;
-  }
-
-  return (
-    <ContextMenu>
-      <ContextMenuTrigger
-        enabledOnWeb
-        style={longPressCopyMenuStylesheet.trigger}
-        accessibilityLabel="Message actions"
-      >
-        {children}
-      </ContextMenuTrigger>
-      <ContextMenuContent align="start" width={180} mobileMode="dropdown" testID={testID}>
-        <ContextMenuItem
-          testID={testID ? `${testID}-copy` : undefined}
-          onSelect={handleCopy}
-          leading={LongPressCopyMenuItemIcon}
-        >
-          Copy
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
-  );
-});
-
 const userMessageStylesheet = StyleSheet.create((theme) => ({
   container: {
     flexDirection: "row",
@@ -493,7 +411,10 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
   },
   copyButton: {
+    alignSelf: "center",
     padding: theme.spacing[1],
+    paddingTop: theme.spacing[1],
+    marginTop: 0,
     marginRight: -theme.spacing[1],
   },
   trailingRow: {
@@ -542,10 +463,15 @@ function getUserMessageAttachmentLabel(attachment: AgentAttachment): string {
 }
 
 export const UserMessage = memo(function UserMessage({
+  serverId,
+  agentId,
+  messageId,
   message,
   images = [],
   attachments = [],
   timestamp,
+  capabilities,
+  client,
   isFirstInGroup = true,
   isLastInGroup = true,
   disableOuterSpacing,
@@ -561,10 +487,17 @@ export const UserMessage = memo(function UserMessage({
     () => formatMessageTimestamp(new Date(timestamp)),
     [timestamp],
   );
+  const rewindMutation = useRewindAgentMutation({ serverId, agentId, client, messageId });
 
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
   const getMessageContent = useCallback(() => message, [message]);
+  const handleRewind = useCallback(
+    (input: { mode: RewindMode; rewoundText: string }) => {
+      return rewindMutation.rewindAgent(input);
+    },
+    [rewindMutation],
+  );
 
   const containerStyle = useMemo(
     () => [
@@ -602,52 +535,53 @@ export const UserMessage = memo(function UserMessage({
   );
 
   return (
-    <View style={containerStyle}>
+    <View style={containerStyle} testID="user-message">
       <View
         style={userMessageStylesheet.content}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
-        <LongPressCopyMenu
-          getContent={getMessageContent}
-          enabled={hasText}
-          copyLabel="message"
-          testID="user-message-copy-menu"
-        >
-          <View style={userMessageStylesheet.bubble}>
-            {hasImages ? (
-              <View style={imagePreviewContainerStyle}>
-                {images.map((image) => (
-                  <View key={image.id} style={userMessageStylesheet.imagePill}>
-                    <UserMessageAttachmentThumbnail image={image} />
-                  </View>
-                ))}
-              </View>
-            ) : null}
-            {hasAttachments ? (
-              <View style={attachmentPreviewContainerStyle}>
-                {attachments.map((attachment, index) => (
-                  <View
-                    key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
-                    style={userMessageStylesheet.structuredAttachmentPill}
-                  >
-                    <Text style={userMessageStylesheet.structuredAttachmentText} numberOfLines={1}>
-                      {getUserMessageAttachmentLabel(attachment)}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-            {hasText ? (
-              <Text selectable style={userMessageStylesheet.text}>
-                {message}
-              </Text>
-            ) : null}
-          </View>
-        </LongPressCopyMenu>
+        <View style={userMessageStylesheet.bubble}>
+          {hasImages ? (
+            <View style={imagePreviewContainerStyle}>
+              {images.map((image) => (
+                <View key={image.id} style={userMessageStylesheet.imagePill}>
+                  <UserMessageAttachmentThumbnail image={image} />
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {hasAttachments ? (
+            <View style={attachmentPreviewContainerStyle}>
+              {attachments.map((attachment, index) => (
+                <View
+                  key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
+                  style={userMessageStylesheet.structuredAttachmentPill}
+                >
+                  <Text style={userMessageStylesheet.structuredAttachmentText} numberOfLines={1}>
+                    {getUserMessageAttachmentLabel(attachment)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {hasText ? (
+            <Text selectable style={userMessageStylesheet.text}>
+              {message}
+            </Text>
+          ) : null}
+        </View>
         {hasText ? (
           <View style={trailingRowStyle} pointerEvents={showTrailingRow ? "auto" : "none"}>
             <Text style={userMessageStylesheet.timestampText}>{formattedTimestamp}</Text>
+            {capabilities ? (
+              <RewindMenu
+                capabilities={capabilities}
+                isPending={rewindMutation.isPending}
+                rewoundText={message}
+                onRewind={handleRewind}
+              />
+            ) : null}
             <TurnCopyButton
               getContent={getMessageContent}
               containerStyle={userMessageStylesheet.copyButton}
@@ -680,31 +614,73 @@ const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
     marginLeft: -theme.spacing[1],
   },
   labelWrapper: {
+    position: "relative",
+  },
+  labelSizer: {
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+    opacity: 0,
+  },
+  labelOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
   },
 }));
 
+const TIMESTAMP_REVEAL_MS = 3000;
+
 /**
  * Footer rendered next to the copy button at the end of an assistant turn.
- * Shows the turn duration and, once available, the completion timestamp.
+ * Always shows the turn duration; swaps to the end timestamp on hover (web)
+ * or tap (native). The hidden sizer keeps the label width stable while the
+ * visible text swaps.
  */
 export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   getContent,
   completedAt,
   durationMs,
 }: AssistantTurnFooterProps) {
+  const [hovered, setHovered] = useState(false);
+  const [pressedReveal, setPressedReveal] = useState(false);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const durationLabel = useMemo(
+    () => (durationMs !== undefined ? `Worked for ${formatDuration(durationMs)}` : ""),
+    [durationMs],
+  );
   const timestampLabel = useMemo(
     () => (completedAt ? formatMessageTimestamp(completedAt) : ""),
     [completedAt],
   );
-  const durationLabel = useMemo(() => {
-    if (durationMs === undefined) {
-      return "";
+
+  const canSwap = Boolean(timestampLabel);
+  const showTimestamp = canSwap && (isWeb ? hovered : pressedReveal);
+
+  const handleHoverIn = useCallback(() => setHovered(true), []);
+  const handleHoverOut = useCallback(() => setHovered(false), []);
+  const handlePress = useCallback(() => {
+    if (isWeb || !canSwap) return;
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
     }
-    const baseLabel = `Worked for ${formatDuration(durationMs)}`;
-    return timestampLabel ? `${baseLabel} - ${timestampLabel}` : baseLabel;
-  }, [durationMs, timestampLabel]);
+    setPressedReveal((prev) => !prev);
+    revealTimerRef.current = setTimeout(() => {
+      setPressedReveal(false);
+      revealTimerRef.current = null;
+    }, TIMESTAMP_REVEAL_MS);
+  }, [canSwap]);
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
@@ -713,9 +689,24 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
         containerStyle={assistantTurnFooterStylesheet.copyButton}
       />
       {durationLabel ? (
-        <Text style={assistantTurnFooterStylesheet.labelWrapper} accessibilityLabel={durationLabel}>
-          {durationLabel}
-        </Text>
+        <Pressable
+          onPress={handlePress}
+          onHoverIn={handleHoverIn}
+          onHoverOut={handleHoverOut}
+          accessibilityRole={canSwap ? "button" : undefined}
+          accessibilityLabel={canSwap ? `${durationLabel}, ended ${timestampLabel}` : durationLabel}
+        >
+          <View style={assistantTurnFooterStylesheet.labelWrapper}>
+            {/* Sizer reserves space for whichever label is longer so the
+                container width is stable across hover transitions. */}
+            <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden>
+              {durationLabel.length >= timestampLabel.length ? durationLabel : timestampLabel}
+            </Text>
+            <Text style={assistantTurnFooterStylesheet.labelOverlay}>
+              {showTimestamp ? timestampLabel : durationLabel}
+            </Text>
+          </View>
+        </Pressable>
       ) : null}
     </View>
   );
@@ -757,11 +748,9 @@ export const LiveElapsed = memo(function LiveElapsed({
 interface AssistantMessageProps {
   message: string;
   timestamp: number;
-  onInlinePathPress?: (target: InlinePathTarget, disposition: OpenFileDisposition) => void;
   workspaceRoot?: string;
   serverId?: string;
   client?: DaemonClient | null;
-  toast?: ToastApi | null;
   spacing?: "default" | "compactTop" | "compactBottom" | "compactBoth";
 }
 
@@ -1161,7 +1150,7 @@ export const TurnCopyButton = memo(function TurnCopyButton({
       return;
     }
 
-    await Clipboard.setStringAsync(content);
+    await writeMarkdownToRichClipboard(content, getDefaultMarkdownClipboardEnvironment());
     setCopied(true);
 
     if (copyTimeoutRef.current) {
@@ -1537,11 +1526,7 @@ function MarkdownInheritedText({
     () => [inheritedStyles, textStyle, overrideStyle],
     [inheritedStyles, textStyle, overrideStyle],
   );
-  return (
-    <Text selectable style={style}>
-      {children}
-    </Text>
-  );
+  return <MarkdownTextSpan style={style}>{children}</MarkdownTextSpan>;
 }
 
 interface MarkdownListItemContentProps {
@@ -1556,62 +1541,23 @@ function MarkdownListItemContent({ contentStyle, children }: MarkdownListItemCon
   return <View style={style}>{children}</View>;
 }
 
-interface MarkdownParagraphViewProps {
-  paragraphStyle: ViewStyle;
-  children: ReactNode;
-}
-
-const MARKDOWN_PARAGRAPH_RESET: ViewStyle = { marginBottom: 0 };
-
-function MarkdownParagraphView({ paragraphStyle, children }: MarkdownParagraphViewProps) {
-  const style = useMemo(() => [paragraphStyle, MARKDOWN_PARAGRAPH_RESET], [paragraphStyle]);
-  return <View style={style}>{children}</View>;
-}
-
-// List spacing in markdown:
-//   - p -> list and list -> p use a slightly larger gap than p -> p, so lists
-//     read as their own section against surrounding prose.
-//   - list -> list keeps the normal p-to-p gap; back-to-back lists are
-//     continuous content, not section breaks.
-//
-// Paragraph's marginBottom is SPACING[3] = 12 (and marginTop is 0). To produce
-// 16px gaps on p<->list transitions and 12px on list<->list, we add a constant
-// marginTop on lists (4) and switch marginBottom by next-sibling type:
-//   p -> list      = p.marginBottom(12) + list.marginTop(4)        = 16
-//   list -> p      = list.marginBottom(16) + p.marginTop(0)        = 16
-//   list -> list   = list.marginBottom(8) + list.marginTop(4)      = 12
-const MARKDOWN_LIST_MARGIN_TOP = SPACING[1]; // 4
-const MARKDOWN_LIST_MARGIN_BOTTOM_TO_PROSE = SPACING[4]; // 16
-const MARKDOWN_LIST_MARGIN_BOTTOM_TO_LIST = SPACING[2]; // 8
-
-function getMarkdownListContextMarginBottom(node: ASTNode, parent: ASTNode[]): number {
-  const nextType = getMarkdownNextSiblingType(node, parent);
-  const nextIsList = nextType === "bullet_list" || nextType === "ordered_list";
-  return nextIsList ? MARKDOWN_LIST_MARGIN_BOTTOM_TO_LIST : MARKDOWN_LIST_MARGIN_BOTTOM_TO_PROSE;
-}
-
 interface MarkdownListViewProps {
   baseStyle: ViewStyle;
-  marginBottom: number;
+  spacing: { marginTop: number; marginBottom: number };
   children: ReactNode;
 }
 
-function MarkdownListView({ baseStyle, marginBottom, children }: MarkdownListViewProps) {
-  const style = useMemo(
-    () => [baseStyle, { marginTop: MARKDOWN_LIST_MARGIN_TOP, marginBottom }],
-    [baseStyle, marginBottom],
-  );
+function MarkdownListView({ baseStyle, spacing, children }: MarkdownListViewProps) {
+  const style = useMemo(() => [baseStyle, spacing], [baseStyle, spacing]);
   return <View style={style}>{children}</View>;
 }
 
 export const AssistantMessage = memo(function AssistantMessage({
   message,
   timestamp: _timestamp,
-  onInlinePathPress,
   workspaceRoot,
   serverId,
   client,
-  toast,
   spacing = "default",
 }: AssistantMessageProps) {
   const markdownParser = useMemo(() => {
@@ -1627,35 +1573,13 @@ export const AssistantMessage = memo(function AssistantMessage({
     return parser;
   }, []);
 
-  const fileLinkResolver = useAssistantFileLinkResolver({
-    client,
-    serverId,
-    workspaceRoot,
-    onOpenWorkspaceFile: onInlinePathPress,
-    toast,
+  const fileLinkActions = useAssistantFileLinkActions();
+  const handleMarkdownLinkPress = useStableEvent((url: string) => {
+    fileLinkActions.open({ href: url }, "main");
+    // react-native-markdown-display opens the link itself when this returns true.
+    // We already handled it above, so return false to avoid duplicate opens.
+    return false;
   });
-
-  const handleLinkPress = useCallback(
-    (source: AssistantFileLinkSource, disposition: OpenFileDisposition) => {
-      fileLinkResolver.open({ source, disposition });
-    },
-    [fileLinkResolver],
-  );
-  const handleLinkPrefetch = useCallback(
-    (source: AssistantFileLinkSource) => {
-      fileLinkResolver.prefetch({ source });
-    },
-    [fileLinkResolver],
-  );
-  const handleMarkdownLinkPress = useCallback(
-    (url: string) => {
-      fileLinkResolver.open({ source: { href: url }, disposition: "main" });
-      // react-native-markdown-display opens the link itself when this returns true.
-      // We already handled it above, so return false to avoid duplicate opens.
-      return false;
-    },
-    [fileLinkResolver],
-  );
 
   const markdownRules = useMemo<RenderRules>(() => {
     return {
@@ -1728,12 +1652,13 @@ export const AssistantMessage = memo(function AssistantMessage({
       ) => {
         const content = node.content ?? "";
         const isLinkedInlineCode = nodeHasParentType(parent, "link");
-        const inlineCodeFileLink = classifyAssistantFileLink(content, { workspaceRoot });
+        const inlineCodeSource: AssistantFileLinkSource = {
+          href: content,
+          text: content,
+          sourceType: "inline-code",
+        };
         const shouldResolveInlinePath =
-          onInlinePathPress &&
-          !isLinkedInlineCode &&
-          inlineCodeFileLink &&
-          inlineCodeFileLink.kind !== "external";
+          !isLinkedInlineCode && fileLinkActions.canResolveFile(inlineCodeSource);
 
         if (shouldResolveInlinePath) {
           return (
@@ -1743,9 +1668,6 @@ export const AssistantMessage = memo(function AssistantMessage({
               inheritedStyles={inheritedStyles}
               codeInlineStyle={styles.code_inline}
               linkStyle={styles.link}
-              onPress={handleLinkPress}
-              onPrefetch={handleLinkPrefetch}
-              workspaceRoot={workspaceRoot}
             />
           );
         }
@@ -1763,9 +1685,6 @@ export const AssistantMessage = memo(function AssistantMessage({
               inheritedStyles={inheritedStyles}
               codeInlineStyle={styles.code_inline}
               linkStyle={styles.link}
-              onPress={handleLinkPress}
-              onPrefetch={handleLinkPrefetch}
-              workspaceRoot={workspaceRoot}
             >
               {content}
             </AssistantMarkdownCodeLink>
@@ -1791,7 +1710,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <MarkdownListView
           key={node.key}
           baseStyle={styles.bullet_list}
-          marginBottom={getMarkdownListContextMarginBottom(node, parent)}
+          spacing={getMarkdownListSpacing(node, parent)}
         >
           {children}
         </MarkdownListView>
@@ -1805,7 +1724,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         <MarkdownListView
           key={node.key}
           baseStyle={styles.ordered_list}
-          marginBottom={getMarkdownListContextMarginBottom(node, parent)}
+          spacing={getMarkdownListSpacing(node, parent)}
         >
           {children}
         </MarkdownListView>
@@ -1822,9 +1741,7 @@ export const AssistantMessage = memo(function AssistantMessage({
 
         return (
           <View key={node.key} style={styles.list_item}>
-            <Text selectable style={iconStyle}>
-              {marker}
-            </Text>
+            <Text style={iconStyle}>{marker}</Text>
             <MarkdownListItemContent contentStyle={contentStyle}>
               {children}
             </MarkdownListItemContent>
@@ -1846,9 +1763,6 @@ export const AssistantMessage = memo(function AssistantMessage({
           key={node.key}
           source={getMarkdownLinkSource(node)}
           style={styles.link}
-          onPress={handleLinkPress}
-          onPrefetch={handleLinkPrefetch}
-          workspaceRoot={workspaceRoot}
         >
           {Children.map(children, (child) => {
             if (!isValidElement(child)) return child;
@@ -1887,15 +1801,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         );
       },
     };
-  }, [
-    client,
-    handleLinkPrefetch,
-    handleLinkPress,
-    markdownParser,
-    onInlinePathPress,
-    serverId,
-    workspaceRoot,
-  ]);
+  }, [client, fileLinkActions, markdownParser, serverId, workspaceRoot]);
 
   const blocks = useMemo(() => splitMarkdownBlocks(message), [message]);
   const keyedBlocks = useMemo(
@@ -1914,32 +1820,22 @@ export const AssistantMessage = memo(function AssistantMessage({
     [spacing],
   );
 
-  const getAssistantContent = useCallback(() => message, [message]);
-  const hasAssistantContent = isCopyableText(message);
-
   return (
     <View testID="assistant-message" style={assistantContainerStyle}>
-      <LongPressCopyMenu
-        getContent={getAssistantContent}
-        enabled={hasAssistantContent}
-        copyLabel="message"
-        testID="assistant-message-copy-menu"
-      >
-        {keyedBlocks.map(({ key, block }, index) => (
-          <AssistantMessageBlockContainer
-            key={key}
-            block={block}
-            marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
-          >
-            <MemoizedMarkdownBlock
-              text={block}
-              rules={markdownRules}
-              parser={markdownParser}
-              onLinkPress={handleMarkdownLinkPress}
-            />
-          </AssistantMessageBlockContainer>
-        ))}
-      </LongPressCopyMenu>
+      {keyedBlocks.map(({ key, block }, index) => (
+        <AssistantMessageBlockContainer
+          key={key}
+          block={block}
+          marginBottom={index < keyedBlocks.length - 1 ? 12 : 0}
+        >
+          <MemoizedMarkdownBlock
+            text={block}
+            rules={markdownRules}
+            parser={markdownParser}
+            onLinkPress={handleMarkdownLinkPress}
+          />
+        </AssistantMessageBlockContainer>
+      ))}
     </View>
   );
 });
@@ -1991,25 +1887,13 @@ export const SpeakMessage = memo(function SpeakMessage({
     [resolvedDisableOuterSpacing],
   );
 
-  const getSpeakContent = useCallback(() => message, [message]);
-  const hasSpeakContent = isCopyableText(message);
-
   return (
     <View testID="speak-message" style={containerStyle}>
       <View style={speakMessageStylesheet.header}>
         <ThemedMicVocal size={12} uniProps={foregroundMutedColorMapping} />
         <Text style={speakMessageStylesheet.headerLabel}>Spoke</Text>
       </View>
-      <LongPressCopyMenu
-        getContent={getSpeakContent}
-        enabled={hasSpeakContent}
-        copyLabel="message"
-        testID="speak-message-copy-menu"
-      >
-        <Text selectable style={speakMessageStylesheet.text}>
-          {message}
-        </Text>
-      </LongPressCopyMenu>
+      <Text style={speakMessageStylesheet.text}>{message}</Text>
     </View>
   );
 });
@@ -2091,7 +1975,7 @@ const activityLogStylesheet = StyleSheet.create((theme) => ({
   },
   metadataText: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.code,
     fontFamily: Fonts.mono,
     lineHeight: 16,
   },

@@ -2,7 +2,6 @@ import {
   View,
   Text,
   Pressable,
-  Image,
   Platform,
   ActivityIndicator,
   StatusBar,
@@ -12,7 +11,11 @@ import {
   type ViewStyle,
 } from "react-native";
 import * as Haptics from "expo-haptics";
-import { useQueries } from "@tanstack/react-query";
+import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { slugify, validateBranchSlug, MAX_SLUG_LENGTH } from "@getpaseo/protocol/branch-slug";
+import { ProjectIconView } from "@/components/project-icon-view";
+import { AdaptiveRenameModal } from "@/components/rename-modal";
+import { invalidateCheckoutGitQueriesForClient } from "@/git/query-keys";
 import {
   useCallback,
   useMemo,
@@ -24,7 +27,7 @@ import {
   type Ref,
 } from "react";
 import { router, usePathname, type Href } from "expo-router";
-import { navigateToWorkspace } from "@/hooks/use-workspace-navigation";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import { type GestureType } from "react-native-gesture-handler";
@@ -45,6 +48,7 @@ import {
   SquareTerminal,
   Monitor,
   MoreVertical,
+  Pencil,
   Plus,
   Trash2,
 } from "lucide-react-native";
@@ -53,7 +57,7 @@ import { DraggableList, type DraggableRenderItemInfo } from "./draggable-list";
 import type { DraggableListDragHandleProps } from "./draggable-list.types";
 import { getHostRuntimeStore, isHostRuntimeConnected } from "@/runtime/host-runtime";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { projectIconQueryKey } from "@/hooks/use-project-icon-query";
+import { projectIconQueryKey, projectIconToDataUri } from "@/hooks/use-project-icon-query";
 import {
   buildHostNewWorkspaceRoute,
   buildProjectSettingsRoute,
@@ -95,7 +99,7 @@ import { Shortcut } from "@/components/ui/shortcut";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
-import { type PrHint, useWorkspacePrHint } from "@/git/use-pr-status-query";
+import type { PrHint } from "@/git/use-pr-status-query";
 import { buildSidebarProjectRowModel } from "@/utils/sidebar-project-row-model";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useSessionStore, type WorkspaceDescriptor } from "@/stores/session-store";
@@ -114,13 +118,6 @@ import {
 import { WorkspaceHoverCard } from "@/components/workspace-hover-card";
 import { GitHubIcon } from "@/components/icons/github-icon";
 import { isWeb as platformIsWeb, isNative as platformIsNative } from "@/constants/platform";
-
-function toProjectIconDataUri(icon: { mimeType: string; data: string } | null): string | null {
-  if (!icon) {
-    return null;
-  }
-  return `data:${icon.mimeType};base64,${icon.data}`;
-}
 
 const workspaceKeyExtractor = (workspace: SidebarWorkspaceEntry) => workspace.workspaceKey;
 
@@ -147,6 +144,7 @@ const ThemedTrash2 = withUnistyles(Trash2);
 const ThemedSettings = withUnistyles(Settings);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedArchive = withUnistyles(Archive);
+const ThemedPencil = withUnistyles(Pencil);
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -232,6 +230,7 @@ interface WorkspaceRowInnerProps {
   onArchive?: () => void;
   onCopyBranchName?: () => void;
   onCopyPath?: () => void;
+  onRename?: () => void;
   archiveShortcutKeys?: ShortcutKey[][] | null;
 }
 
@@ -465,6 +464,7 @@ function ProjectLeadingVisual({
   displayName,
   iconDataUri,
   workspace,
+  projectKey,
   chevron = null,
   showChevron = false,
   isArchiving = false,
@@ -472,6 +472,7 @@ function ProjectLeadingVisual({
   displayName: string;
   iconDataUri: string | null;
   workspace: SidebarWorkspaceEntry | null;
+  projectKey: string;
   chevron?: "expand" | "collapse" | null;
   showChevron?: boolean;
   isArchiving?: boolean;
@@ -496,7 +497,11 @@ function ProjectLeadingVisual({
   if (!shouldShowWorkspaceStatus || !activeWorkspace) {
     return (
       <View style={styles.projectLeadingVisualSlot}>
-        <ProjectIcon iconDataUri={iconDataUri} placeholderInitial={placeholderInitial} />
+        <ProjectIcon
+          iconDataUri={iconDataUri}
+          placeholderInitial={placeholderInitial}
+          projectKey={projectKey}
+        />
       </View>
     );
   }
@@ -505,6 +510,7 @@ function ProjectLeadingVisual({
     <ProjectLeadingVisualStatus
       iconDataUri={iconDataUri}
       placeholderInitial={placeholderInitial}
+      projectKey={projectKey}
       isArchiving={isArchiving}
       shouldShowSyncedLoader={shouldShowSyncedLoader}
       activeWorkspace={activeWorkspace}
@@ -565,6 +571,7 @@ const trash2LeadingIcon = <ThemedTrash2 size={14} uniProps={foregroundMutedColor
 const settingsLeadingIcon = <ThemedSettings size={14} uniProps={foregroundMutedColorMapping} />;
 const copyLeadingIcon = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
 const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedColorMapping} />;
+const renameLeadingIcon = <ThemedPencil size={14} uniProps={foregroundMutedColorMapping} />;
 
 function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
   return (
@@ -640,6 +647,7 @@ function WorkspaceRowRightGroup({
   onArchive,
   onCopyBranchName,
   onCopyPath,
+  onRename,
 }: {
   workspace: SidebarWorkspaceEntry;
   isHovered: boolean;
@@ -656,6 +664,7 @@ function WorkspaceRowRightGroup({
   onArchive?: () => void;
   onCopyBranchName?: () => void;
   onCopyPath?: () => void;
+  onRename?: () => void;
 }) {
   const showKebab = Boolean(onArchive && (isHovered || isTouchPlatform));
   return (
@@ -675,6 +684,7 @@ function WorkspaceRowRightGroup({
           workspaceKey={workspace.workspaceKey}
           onCopyPath={onCopyPath}
           onCopyBranchName={onCopyBranchName}
+          onRename={onRename}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
           archiveStatus={archiveStatus}
@@ -701,6 +711,7 @@ function WorkspaceKebabMenu({
   workspaceKey,
   onCopyPath,
   onCopyBranchName,
+  onRename,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -710,6 +721,7 @@ function WorkspaceKebabMenu({
   workspaceKey: string;
   onCopyPath?: () => void;
   onCopyBranchName?: () => void;
+  onRename?: () => void;
   onArchive: () => void;
   archiveLabel?: string;
   archiveStatus?: "idle" | "pending" | "success";
@@ -750,6 +762,15 @@ function WorkspaceKebabMenu({
             Copy branch name
           </DropdownMenuItem>
         ) : null}
+        {onRename ? (
+          <DropdownMenuItem
+            testID={`sidebar-workspace-menu-rename-${workspaceKey}`}
+            leading={renameLeadingIcon}
+            onSelect={onRename}
+          >
+            Rename workspace
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem
           testID={`sidebar-workspace-menu-archive-${workspaceKey}`}
           leading={archiveLeadingIcon}
@@ -768,30 +789,35 @@ function WorkspaceKebabMenu({
 function ProjectIcon({
   iconDataUri,
   placeholderInitial,
+  projectKey,
 }: {
   iconDataUri: string | null;
   placeholderInitial: string;
+  projectKey: string;
 }) {
-  const imageSource = useMemo(() => ({ uri: iconDataUri ?? "" }), [iconDataUri]);
-  if (iconDataUri) {
-    return <Image source={imageSource} style={styles.projectIcon} />;
-  }
   return (
-    <View style={styles.projectIconFallback}>
-      <Text style={styles.projectIconFallbackText}>{placeholderInitial}</Text>
-    </View>
+    <ProjectIconView
+      iconDataUri={iconDataUri}
+      initial={placeholderInitial}
+      projectKey={projectKey}
+      imageStyle={styles.projectIcon}
+      fallbackStyle={styles.projectIconFallback}
+      textStyle={styles.projectIconFallbackText}
+    />
   );
 }
 
 function ProjectLeadingVisualStatus({
   iconDataUri,
   placeholderInitial,
+  projectKey,
   isArchiving,
   shouldShowSyncedLoader,
   activeWorkspace,
 }: {
   iconDataUri: string | null;
   placeholderInitial: string;
+  projectKey: string;
   isArchiving: boolean;
   shouldShowSyncedLoader: boolean;
   activeWorkspace: SidebarWorkspaceEntry;
@@ -831,7 +857,11 @@ function ProjectLeadingVisualStatus({
 
   return (
     <View style={styles.projectLeadingVisualSlot}>
-      <ProjectIcon iconDataUri={iconDataUri} placeholderInitial={placeholderInitial} />
+      <ProjectIcon
+        iconDataUri={iconDataUri}
+        placeholderInitial={placeholderInitial}
+        projectKey={projectKey}
+      />
       {dotColorStyle ? (
         <StatusDotOverlay
           dotColorStyle={dotColorStyle}
@@ -1223,6 +1253,7 @@ function ProjectHeaderRow({
           displayName={displayName}
           iconDataUri={iconDataUri}
           workspace={workspace}
+          projectKey={project.projectKey}
           chevron={chevron}
           showChevron={isHovered && chevron !== null}
           isArchiving={isArchiving}
@@ -1319,19 +1350,13 @@ function WorkspaceRowInner({
   onArchive,
   onCopyBranchName,
   onCopyPath,
+  onRename,
   archiveShortcutKeys,
 }: WorkspaceRowInnerProps) {
   const _isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const isTouchPlatform = platformIsNative;
-  const workspaceDirectory = resolveWorkspaceExecutionDirectory({
-    workspaceDirectory: workspace.workspaceDirectory,
-  });
-  const prHint = useWorkspacePrHint({
-    serverId: workspace.serverId,
-    cwd: workspaceDirectory ?? "",
-    enabled: workspace.projectKind === "git" && Boolean(workspaceDirectory),
-  });
+  const prHint = workspace.prHint;
   const interaction = useLongPressDragInteraction({
     drag,
     menuController,
@@ -1429,6 +1454,7 @@ function WorkspaceRowInner({
               onArchive={onArchive}
               onCopyBranchName={onCopyBranchName}
               onCopyPath={onCopyPath}
+              onRename={onRename}
             />
           </View>
           {prHint ? (
@@ -1469,7 +1495,9 @@ function WorkspaceRowWithMenu({
   const toast = useToast();
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
   const archiveWorktree = useCheckoutGitActionsStore((state) => state.archiveWorktree);
+  const queryClient = useQueryClient();
   const [isArchivingWorkspace, setIsArchivingWorkspace] = useState(false);
+  const [isRenameOpen, setIsRenameOpen] = useState(false);
   const workspaceDirectory = resolveWorkspaceExecutionDirectory({
     workspaceDirectory: workspace.workspaceDirectory,
   });
@@ -1599,6 +1627,51 @@ function WorkspaceRowWithMenu({
     toast.copied("Branch name copied");
   }, [toast, workspace.name]);
 
+  const renameMutation = useMutation({
+    mutationFn: async (branch: string) => {
+      const client = getHostRuntimeStore().getClient(workspace.serverId);
+      if (!client) {
+        throw new Error("Host is not connected");
+      }
+      const targetCwd = requireWorkspaceExecutionDirectory({
+        workspaceId: workspace.workspaceId,
+        workspaceDirectory: workspace.workspaceDirectory,
+      });
+      const payload = await client.renameBranch({ cwd: targetCwd, branch });
+      if (!payload.success || payload.error) {
+        throw new Error(payload.error?.message ?? "Failed to rename branch");
+      }
+      return { targetCwd };
+    },
+    onSuccess: async ({ targetCwd }) => {
+      await invalidateCheckoutGitQueriesForClient(queryClient, {
+        serverId: workspace.serverId,
+        cwd: targetCwd,
+      });
+    },
+  });
+
+  const handleOpenRename = useCallback(() => {
+    setIsRenameOpen(true);
+  }, []);
+
+  const handleCloseRename = useCallback(() => {
+    setIsRenameOpen(false);
+  }, []);
+
+  const handleSubmitRename = useCallback(
+    async (value: string) => {
+      await renameMutation.mutateAsync(slugify(value));
+    },
+    [renameMutation],
+  );
+
+  const validateRenameSlug = useCallback((value: string): string | null => {
+    const result = validateBranchSlug(slugify(value));
+    if (result.valid) return null;
+    return result.error ?? "Invalid branch name";
+  }, []);
+
   const archiveShortcutKeys = useShortcutKeys("archive-worktree");
 
   useKeyboardActionHandler({
@@ -1617,26 +1690,41 @@ function WorkspaceRowWithMenu({
   });
 
   return (
-    <WorkspaceRowInner
-      workspace={workspace}
-      selected={selected}
-      shortcutNumber={shortcutNumber}
-      showShortcutBadge={showShortcutBadge}
-      onPress={onPress}
-      drag={drag}
-      isDragging={isDragging}
-      isArchiving={isArchiving}
-      isCreating={isCreating}
-      dragHandleProps={dragHandleProps}
-      menuController={null}
-      archiveLabel={isWorktree ? "Archive worktree" : "Hide from sidebar"}
-      archiveStatus={getWorkspaceArchiveStatus(isWorktree, archiveStatus, isArchivingWorkspace)}
-      archivePendingLabel={isWorktree ? "Archiving..." : "Hiding..."}
-      onArchive={isWorktree ? handleArchiveWorktree : handleArchiveWorkspace}
-      onCopyBranchName={canCopyBranchName ? handleCopyBranchName : undefined}
-      onCopyPath={handleCopyPath}
-      archiveShortcutKeys={selected ? archiveShortcutKeys : null}
-    />
+    <>
+      <WorkspaceRowInner
+        workspace={workspace}
+        selected={selected}
+        shortcutNumber={shortcutNumber}
+        showShortcutBadge={showShortcutBadge}
+        onPress={onPress}
+        drag={drag}
+        isDragging={isDragging}
+        isArchiving={isArchiving}
+        isCreating={isCreating}
+        dragHandleProps={dragHandleProps}
+        menuController={null}
+        archiveLabel={isWorktree ? "Archive worktree" : "Hide from sidebar"}
+        archiveStatus={getWorkspaceArchiveStatus(isWorktree, archiveStatus, isArchivingWorkspace)}
+        archivePendingLabel={isWorktree ? "Archiving..." : "Hiding..."}
+        onArchive={isWorktree ? handleArchiveWorktree : handleArchiveWorkspace}
+        onCopyBranchName={canCopyBranchName ? handleCopyBranchName : undefined}
+        onCopyPath={handleCopyPath}
+        onRename={canCopyBranchName ? handleOpenRename : undefined}
+        archiveShortcutKeys={selected ? archiveShortcutKeys : null}
+      />
+      <AdaptiveRenameModal
+        visible={isRenameOpen}
+        title="Rename workspace"
+        initialValue={workspace.name}
+        placeholder="branch-name"
+        submitLabel="Rename"
+        validate={validateRenameSlug}
+        maxLength={MAX_SLUG_LENGTH}
+        onClose={handleCloseRename}
+        onSubmit={handleSubmitRename}
+        testID={`sidebar-workspace-rename-modal-${workspace.workspaceKey}`}
+      />
+    </>
   );
 }
 
@@ -2272,7 +2360,7 @@ export function SidebarWorkspaceList({
         const result = await client.requestProjectIcon(request.cwd);
         return result.icon;
       },
-      select: toProjectIconDataUri,
+      select: projectIconToDataUri,
       enabled: Boolean(
         getHostRuntimeStore().getClient(request.serverId) &&
         isHostRuntimeConnected(getHostRuntimeStore().getSnapshot(request.serverId)) &&
@@ -2635,13 +2723,10 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     height: "100%",
     borderRadius: theme.borderRadius.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
     alignItems: "center",
     justifyContent: "center",
   },
   projectIconFallbackText: {
-    color: theme.colors.foregroundMuted,
     fontSize: 9,
   },
   projectTitle: {

@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Image, Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, Text, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, MoreVertical, Pencil, Plus, X } from "lucide-react-native";
-import { useProjectIconQuery } from "@/hooks/use-project-icon-query";
+import { ProjectIconView } from "@/components/project-icon-view";
+import { projectIconToDataUri, useProjectIconQuery } from "@/hooks/use-project-icon-query";
 import type {
   PaseoConfigRaw,
   PaseoConfigRevision,
   ProjectConfigRpcError,
-} from "@server/shared/messages";
-import type { DaemonClient } from "@server/client/daemon-client";
+} from "@getpaseo/protocol/messages";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,6 +24,7 @@ import { ExternalLink } from "@/components/ui/external-link";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Switch } from "@/components/ui/switch";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
+import { SettingsTextAreaCard } from "@/components/settings-textarea";
 import { SettingsGroup } from "@/screens/settings/settings-group";
 import { SettingsSection } from "@/screens/settings/settings-section";
 import { settingsStyles } from "@/styles/settings";
@@ -233,7 +235,11 @@ function ProjectSettingsBody({
 
       <View style={styles.headerBlock}>
         <View style={styles.titleRow}>
-          <ProjectTitleIcon host={selectedHost} projectName={project.projectName} />
+          <ProjectTitleIcon
+            host={selectedHost}
+            projectName={project.projectName}
+            projectKey={project.projectKey}
+          />
           <ProjectNameEditor project={project} client={client} />
         </View>
         <HostContext hosts={hosts} selectedHost={selectedHost} onSelectHost={onSelectHost} />
@@ -621,18 +627,13 @@ function ProjectConfigForm({
         testID="worktree-group"
       >
         <SettingsSection title="Setup" testID="worktree-setup-section" trailing={setupDocsLink}>
-          <View style={settingsStyles.card}>
-            <TextInput
-              testID="worktree-setup-input"
-              accessibilityLabel="Worktree setup commands"
-              multiline
-              value={draft.setupText}
-              onChangeText={handleSetupChange}
-              placeholder="npm install"
-              placeholderTextColor={styles.placeholderColor.color}
-              style={styles.lifecycleInput}
-            />
-          </View>
+          <SettingsTextAreaCard
+            testID="worktree-setup-input"
+            accessibilityLabel="Worktree setup commands"
+            value={draft.setupText}
+            onChangeText={handleSetupChange}
+            placeholder="npm install"
+          />
         </SettingsSection>
 
         <SettingsSection
@@ -641,18 +642,13 @@ function ProjectConfigForm({
           trailing={teardownDocsLink}
           flush
         >
-          <View style={settingsStyles.card}>
-            <TextInput
-              testID="worktree-teardown-input"
-              accessibilityLabel="Worktree teardown commands"
-              multiline
-              value={draft.teardownText}
-              onChangeText={handleTeardownChange}
-              placeholder="docker compose down"
-              placeholderTextColor={styles.placeholderColor.color}
-              style={styles.lifecycleInput}
-            />
-          </View>
+          <SettingsTextAreaCard
+            testID="worktree-teardown-input"
+            accessibilityLabel="Worktree teardown commands"
+            value={draft.teardownText}
+            onChangeText={handleTeardownChange}
+            placeholder="docker compose down"
+          />
         </SettingsSection>
       </SettingsGroup>
 
@@ -889,19 +885,26 @@ function ProjectNameEditor({ project, client }: ProjectNameEditorProps) {
   );
 }
 
-function ProjectTitleIcon({ host, projectName }: { host: ProjectHostEntry; projectName: string }) {
+function ProjectTitleIcon({
+  host,
+  projectName,
+  projectKey,
+}: {
+  host: ProjectHostEntry;
+  projectName: string;
+  projectKey: string;
+}) {
   const initial = projectName.trim().charAt(0).toUpperCase() || "?";
   const { icon } = useProjectIconQuery({ serverId: host.serverId, cwd: host.repoRoot });
-  const iconDataUri =
-    icon && icon.data && icon.mimeType ? `data:${icon.mimeType};base64,${icon.data}` : null;
-  const imageSource = useMemo(() => ({ uri: iconDataUri ?? "" }), [iconDataUri]);
-  if (iconDataUri) {
-    return <Image source={imageSource} style={styles.titleIcon} />;
-  }
   return (
-    <View style={styles.titleIconFallback}>
-      <Text style={styles.titleIconFallbackText}>{initial}</Text>
-    </View>
+    <ProjectIconView
+      iconDataUri={projectIconToDataUri(icon)}
+      initial={initial}
+      projectKey={projectKey}
+      imageStyle={styles.titleIcon}
+      fallbackStyle={styles.titleIconFallback}
+      textStyle={styles.titleIconFallbackText}
+    />
   );
 }
 
@@ -1008,18 +1011,13 @@ function MetadataPromptSection({ promptKey, value, onChange, flush }: MetadataPr
   );
   return (
     <SettingsSection title={meta.title} testID={meta.sectionTestID} flush={flush}>
-      <View style={settingsStyles.card}>
-        <TextInput
-          testID={meta.inputTestID}
-          accessibilityLabel={meta.title}
-          multiline
-          value={value}
-          onChangeText={handleChange}
-          placeholder={meta.placeholder}
-          placeholderTextColor={styles.placeholderColor.color}
-          style={styles.lifecycleInput}
-        />
-      </View>
+      <SettingsTextAreaCard
+        testID={meta.inputTestID}
+        accessibilityLabel={meta.title}
+        value={value}
+        onChangeText={handleChange}
+        placeholder={meta.placeholder}
+      />
     </SettingsSection>
   );
 }
@@ -1302,12 +1300,10 @@ const styles = StyleSheet.create((theme) => ({
     width: 28,
     height: 28,
     borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.surface2,
     alignItems: "center",
     justifyContent: "center",
   },
   titleIconFallbackText: {
-    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
   },
@@ -1343,14 +1339,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   errorBlock: {
     marginTop: theme.spacing[2],
-  },
-  lifecycleInput: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    paddingVertical: theme.spacing[3],
-    paddingHorizontal: theme.spacing[4],
-    minHeight: 96,
-    textAlignVertical: "top",
   },
   emptyScripts: {
     color: theme.colors.foregroundMuted,

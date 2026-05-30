@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AgentStreamEventPayload } from "@server/shared/messages";
-import { hydrateStreamState, type AgentToolCallItem, type StreamItem } from "@/types/stream";
+import type { AgentStreamEventPayload } from "@getpaseo/protocol/messages";
+import {
+  buildOptimisticUserMessage,
+  hydrateStreamState,
+  type AgentToolCallItem,
+  type StreamItem,
+} from "@/types/stream";
 import {
   createAgentStreamReducerQueue,
   processTimelineResponse,
@@ -101,6 +106,17 @@ function makeAssistantItem(text: string, id = `assistant-${text.length}`): Strea
     text,
     timestamp: new Date(1000),
   };
+}
+
+function makeOptimisticUserMessage(
+  text: string,
+  id = `optimistic-${text.length}`,
+): Extract<StreamItem, { kind: "user_message" }> {
+  return buildOptimisticUserMessage({
+    id,
+    text,
+    timestamp: new Date(1000),
+  });
 }
 
 function getAssistantTexts(items: StreamItem[]): string[] {
@@ -275,9 +291,89 @@ describe("processTimelineResponse", () => {
     expect(assistant?.timestamp.toISOString()).toBe("2025-01-01T12:00:04.000Z");
   });
 
-  it("sets cursor to null when reset=true but no cursors in payload", () => {
+  it("reconciles an optimistic user message during tail replacement", () => {
+    const image = {
+      id: "optimistic-image",
+      mimeType: "image/png",
+      storageType: "web-indexeddb" as const,
+      storageKey: "optimistic-image",
+      createdAt: 1000,
+    };
+    const attachment = {
+      type: "text" as const,
+      mimeType: "text/plain" as const,
+      text: "attached context",
+      title: "context.txt",
+    };
+    const optimistic = buildOptimisticUserMessage({
+      id: "optimistic-create-user",
+      text: "Analyze this",
+      timestamp: new Date(1000),
+      images: [image],
+      attachments: [attachment],
+    });
+
     const result = processTimelineResponse({
       ...baseTimelineInput,
+      currentTail: [optimistic],
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 1 },
+        entries: [
+          {
+            ...makeTimelineEntry(1, "Analyze this", "user_message"),
+            item: {
+              type: "user_message",
+              text: "server-rendered attachment text",
+              messageId: "canonical-create-user",
+            },
+          },
+        ],
+      },
+    });
+
+    const userMessages = result.tail.filter((item) => item.kind === "user_message");
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      id: "canonical-create-user",
+      text: "Analyze this",
+      timestamp: new Date(1000),
+      images: [image],
+      attachments: [attachment],
+    });
+    expect(userMessages[0]?.optimistic).toBeUndefined();
+  });
+
+  it("keeps an unmatched optimistic user message during tail replacement", () => {
+    const optimistic = makeOptimisticUserMessage("still sending", "optimistic-unmatched");
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [optimistic],
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        entries: [],
+      },
+    });
+
+    expect(result.tail).toEqual([optimistic]);
+  });
+
+  it("sets cursor to null when reset=true but no cursors in payload", () => {
+    const existingTail: StreamItem[] = [
+      {
+        kind: "user_message",
+        id: "only-user",
+        text: "first turn",
+        timestamp: new Date(500),
+      },
+    ];
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: existingTail,
       currentCursor: { epoch: "epoch-1", startSeq: 1, endSeq: 5 },
       payload: {
         ...baseTimelineInput.payload,
@@ -288,6 +384,43 @@ describe("processTimelineResponse", () => {
 
     expect(result.cursor).toBe(null);
     expect(result.cursorChanged).toBe(true);
+    expect(result.tail).toEqual([]);
+    expect(getUserTexts(result.tail)).toHaveLength(0);
+  });
+
+  it("treats a stale epoch reset as a replacement with the new epoch window", () => {
+    const oldTail: StreamItem[] = [makeAssistantItem("old epoch message", "old-assistant")];
+    const oldHead: StreamItem[] = [makeAssistantItem("old live head", "old-head")];
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: oldTail,
+      currentHead: oldHead,
+      currentCursor: { epoch: "old-epoch", startSeq: 1, endSeq: 95 },
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        epoch: "new-epoch",
+        startCursor: { seq: 101 },
+        endCursor: { seq: 105 },
+        hasOlder: true,
+        entries: [
+          makeTimelineEntry(101, "new one"),
+          makeTimelineEntry(102, "new two"),
+          makeTimelineEntry(103, "new three"),
+          makeTimelineEntry(104, "new four"),
+          makeTimelineEntry(105, "new five"),
+        ],
+      },
+    });
+
+    expect(getAssistantTexts(result.tail)).toEqual(["new onenew twonew threenew fournew five"]);
+    expect(result.head).toEqual([]);
+    expect(result.cursor).toEqual({ epoch: "new-epoch", startSeq: 101, endSeq: 105 });
+    expect(result.sideEffects).not.toContainEqual({
+      type: "catch_up",
+      cursor: { epoch: "old-epoch", endSeq: 95 },
+    });
   });
 
   it("performs bootstrap tail init with catch-up side effect", () => {
@@ -496,6 +629,43 @@ describe("processTimelineResponse", () => {
       startSeq: 1,
       endSeq: 5,
     });
+  });
+
+  it("does not reconcile an active optimistic user message from a before-page response", () => {
+    const optimistic = makeOptimisticUserMessage("active prompt", "optimistic-active");
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 3,
+      endSeq: 5,
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [optimistic],
+      currentCursor: existingCursor,
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "before",
+        epoch: "epoch-1",
+        startCursor: { seq: 1 },
+        endCursor: { seq: 2 },
+        entries: [
+          {
+            ...makeTimelineEntry(1, "older prompt", "user_message"),
+            item: {
+              type: "user_message",
+              text: "older prompt",
+              messageId: "canonical-before",
+            },
+          },
+        ],
+      },
+    });
+
+    const userMessages = result.tail.filter((item) => item.kind === "user_message");
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages.map((item) => item.id)).toEqual(["canonical-before", "optimistic-active"]);
+    expect(userMessages[1]?.optimistic).toBe(true);
   });
 
   it("leaves the cursor alone when a before page makes no progress", () => {
@@ -990,6 +1160,34 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
+    expect(result.sideEffects).toEqual([]);
+  });
+
+  it("resets visible timeline when a new epoch starts at seq 1", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 5,
+    };
+    const currentTail = [makeAssistantItem("old timeline")];
+
+    const result = processAgentStreamEvent({
+      ...baseStreamInput,
+      event: makeTimelineEvent("rewound start", "user_message"),
+      seq: 1,
+      epoch: "epoch-2",
+      currentCursor: existingCursor,
+      currentTail,
+    });
+
+    expect(result.cursorChanged).toBe(true);
+    expect(result.cursor).toEqual({
+      epoch: "epoch-2",
+      startSeq: 1,
+      endSeq: 1,
+    });
+    expect(getAssistantTexts(result.tail)).toEqual([]);
+    expect(getUserTexts(result.tail)).toEqual(["rewound start"]);
     expect(result.sideEffects).toEqual([]);
   });
 

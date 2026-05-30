@@ -7,7 +7,7 @@ import type {
   AgentSearchMatch,
   AgentSearchResult,
   DaemonClient,
-} from "@server/client/daemon-client";
+} from "@getpaseo/client/internal/daemon-client";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import type { Theme } from "@/styles/theme";

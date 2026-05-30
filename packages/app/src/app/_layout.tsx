@@ -28,8 +28,10 @@ import { QuittingOverlay } from "@/components/quitting-overlay";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { LeftSidebar } from "@/components/left-sidebar";
 import { ProjectPickerModal } from "@/components/project-picker-modal";
+import { ProviderSettingsHost } from "@/components/provider-settings-host";
 import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { WorkspaceShortcutTargetsSubscriber } from "@/components/workspace-shortcut-targets-subscriber";
+import { FloatingPanelPortalHost } from "@/components/ui/floating-panel-portal";
 import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import {
@@ -53,7 +55,6 @@ import { loadDesktopSettings } from "@/desktop/settings/desktop-settings";
 import { RosettaCalloutSource } from "@/desktop/updates/rosetta-callout-source";
 import { UpdateCalloutSource } from "@/desktop/updates/update-callout-source";
 import { useActiveWorktreeNewAction } from "@/hooks/use-active-worktree-new-action";
-import { useAndroidKeepalive } from "@/hooks/use-android-keepalive";
 import { useFaviconStatus } from "@/hooks/use-favicon-status";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { useLatchedBoolean } from "@/hooks/use-latched-boolean";
@@ -458,6 +459,7 @@ function AppContainer({
         )}
         <View style={flexStyle}>{children}</View>
       </View>
+      <FloatingPanelPortalHost />
       {isCompactLayout && chromeEnabled && <LeftSidebar selectedAgentId={selectedAgentId} />}
       <DownloadToast />
       <RosettaCalloutSource />
@@ -465,6 +467,7 @@ function AppContainer({
       <WorktreeSetupCalloutSource />
       <CommandCenter />
       <ProjectPickerModal />
+      <ProviderSettingsHost />
       <WorkspaceShortcutTargetsSubscriber
         enabled={keyboardShortcutsEnabled}
         serverId={activeServerId}
@@ -883,8 +886,6 @@ function AppShell() {
 }
 
 function RuntimeProviders({ children }: { children: ReactNode }) {
-  useAndroidKeepalive();
-
   return (
     <HostRuntimeBootstrapProvider>
       <PushNotificationRouter />

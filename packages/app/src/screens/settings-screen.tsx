@@ -2,7 +2,6 @@ import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalSto
 import type { ComponentType, ReactNode } from "react";
 import {
   Alert,
-  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -46,7 +45,14 @@ import {
   type Settings as EffectiveSettings,
 } from "@/hooks/use-settings";
 import { THEME_SWATCHES } from "@/styles/theme";
-import { getHostRuntimeStore, isHostRuntimeConnected, useHosts } from "@/runtime/host-runtime";
+import {
+  getHostRuntimeStore,
+  isHostRuntimeConnected,
+  useHostRuntimeIsConnected,
+  useHosts,
+} from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
+import type { HostProfile } from "@/types/host-connection";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { useWindowControlsPadding } from "@/utils/desktop-window";
 import { confirmDialog } from "@/utils/confirm-dialog";
@@ -57,8 +63,8 @@ import { AddHostModal } from "@/components/add-host-modal";
 import { PairLinkModal } from "@/components/pair-link-modal";
 import { KeyboardShortcutsSection } from "@/screens/settings/keyboard-shortcuts-section";
 import { Button } from "@/components/ui/button";
+import { CommunityLinks } from "@/components/community-links";
 import { SegmentedControl } from "@/components/ui/segmented-control";
-import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -76,7 +82,6 @@ import { settingsStyles } from "@/styles/settings";
 import { THINKING_TONE_NATIVE_PCM_BASE64 } from "@/utils/thinking-tone.native-pcm";
 import { useVoiceAudioEngineOptional } from "@/contexts/voice-context";
 import { HostPage, HostRenameButton } from "@/screens/settings/host-page";
-import { AgentSection } from "@/screens/settings/agent-section";
 import ProjectsScreen from "@/screens/projects-screen";
 import ProjectSettingsScreen from "@/screens/project-settings-screen";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -215,7 +220,6 @@ interface GeneralSectionProps {
   handleSendBehaviorChange: (behavior: SendBehavior) => void;
   handleServiceUrlBehaviorChange: (behavior: ServiceUrlBehavior) => void;
   handleTerminalScrollbackLinesChange: (lines: number) => void;
-  handleAndroidBackgroundKeepaliveChange: (enabled: boolean) => void;
 }
 
 interface ThemeMenuItemProps {
@@ -275,7 +279,6 @@ function GeneralSection({
   handleSendBehaviorChange,
   handleServiceUrlBehaviorChange,
   handleTerminalScrollbackLinesChange,
-  handleAndroidBackgroundKeepaliveChange,
 }: GeneralSectionProps) {
   const { theme } = useUnistyles();
   const iconSize = theme.iconSize.md;
@@ -400,22 +403,6 @@ function GeneralSection({
             accessibilityLabel="Terminal scrollback lines"
           />
         </View>
-        {Platform.OS === "android" ? (
-          <View style={ROW_WITH_BORDER_STYLE}>
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>Keep streaming in background</Text>
-              <Text style={settingsStyles.rowHint}>
-                Show a persistent notification so Paseo can keep receiving agent output when you
-                switch apps
-              </Text>
-            </View>
-            <Switch
-              value={settings.androidBackgroundKeepalive}
-              onValueChange={handleAndroidBackgroundKeepaliveChange}
-              accessibilityLabel="Keep streaming in background"
-            />
-          </View>
-        ) : null}
       </View>
     </SettingsSection>
   );
@@ -462,23 +449,111 @@ function DiagnosticsSection({
 }
 
 interface AboutSectionProps {
+  appVersion: string | null;
   appVersionText: string;
   isDesktopApp: boolean;
 }
 
-function AboutSection({ appVersionText, isDesktopApp }: AboutSectionProps) {
+function AboutSection({ appVersion, appVersionText, isDesktopApp }: AboutSectionProps) {
   return (
-    <SettingsSection title="About">
-      <View style={settingsStyles.card}>
-        <View style={settingsStyles.row}>
-          <View style={settingsStyles.rowContent}>
-            <Text style={settingsStyles.rowTitle}>Version</Text>
+    <>
+      <SettingsSection title="About">
+        <View style={settingsStyles.card}>
+          <View style={settingsStyles.row}>
+            <View style={settingsStyles.rowContent}>
+              <Text style={settingsStyles.rowTitle}>App version</Text>
+              <Text style={settingsStyles.rowHint}>This device</Text>
+            </View>
+            <Text style={styles.aboutValue}>{appVersionText}</Text>
           </View>
-          <Text style={styles.aboutValue}>{appVersionText}</Text>
+          {isDesktopApp ? <DesktopAppUpdateRow /> : null}
         </View>
-        {isDesktopApp ? <DesktopAppUpdateRow /> : null}
+      </SettingsSection>
+      <ConnectedHostsSection clientVersion={appVersion} />
+      <View style={styles.aboutCommunity}>
+        <CommunityLinks />
+      </View>
+    </>
+  );
+}
+
+function normalizeVersion(version: string | null | undefined): string | null {
+  const trimmed = version?.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^v/i, "");
+}
+
+function ConnectedHostsSection({ clientVersion }: { clientVersion: string | null }) {
+  const hosts = useHosts();
+  if (hosts.length === 0) {
+    return null;
+  }
+  return (
+    <SettingsSection title="Connected hosts">
+      <View style={settingsStyles.card}>
+        {hosts.map((host, index) => (
+          <HostVersionRow
+            key={host.serverId}
+            host={host}
+            showBorder={index > 0}
+            clientVersion={clientVersion}
+          />
+        ))}
       </View>
     </SettingsSection>
+  );
+}
+
+function HostVersionRow({
+  host,
+  showBorder,
+  clientVersion,
+}: {
+  host: HostProfile;
+  showBorder: boolean;
+  clientVersion: string | null;
+}) {
+  const isConnected = useHostRuntimeIsConnected(host.serverId);
+  const daemonVersion = useSessionStore(
+    (state) => state.sessions[host.serverId]?.serverInfo?.version ?? null,
+  );
+
+  const rowStyle = useMemo(
+    () => [settingsStyles.row, showBorder && settingsStyles.rowBorder],
+    [showBorder],
+  );
+
+  const normalizedHost = normalizeVersion(daemonVersion);
+  const normalizedClient = normalizeVersion(clientVersion);
+  const isMismatch =
+    normalizedHost !== null && normalizedClient !== null && normalizedHost !== normalizedClient;
+
+  let valueText: string;
+  if (!isConnected) {
+    valueText = "Offline";
+  } else if (normalizedHost) {
+    valueText = formatVersionWithPrefix(normalizedHost);
+  } else {
+    valueText = "—";
+  }
+
+  const valueStyle = useMemo(
+    () => [styles.aboutValue, isMismatch && styles.aboutVersionMismatch],
+    [isMismatch],
+  );
+
+  return (
+    <View style={rowStyle}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle} numberOfLines={1}>
+          {host.label}
+        </Text>
+        {isMismatch ? (
+          <Text style={settingsStyles.rowHint}>Version differs from this device</Text>
+        ) : null}
+      </View>
+      <Text style={valueStyle}>{valueText}</Text>
+    </View>
   );
 }
 
@@ -923,13 +998,6 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
     [updateSettings],
   );
 
-  const handleAndroidBackgroundKeepaliveChange = useCallback(
-    (androidBackgroundKeepalive: boolean) => {
-      void updateSettings({ androidBackgroundKeepalive });
-    },
-    [updateSettings],
-  );
-
   const handlePlaybackTest = useCallback(async () => {
     if (!voiceAudioEngine || isPlaybackTestRunning) {
       return;
@@ -1105,18 +1173,14 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
       switch (view.section) {
         case "general":
           return (
-            <>
-              <AgentSection serverId={anyOnlineServerId} />
-              <GeneralSection
-                settings={settings}
-                isDesktopApp={isDesktopApp}
-                handleThemeChange={handleThemeChange}
-                handleSendBehaviorChange={handleSendBehaviorChange}
-                handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
-                handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
-                handleAndroidBackgroundKeepaliveChange={handleAndroidBackgroundKeepaliveChange}
-              />
-            </>
+            <GeneralSection
+              settings={settings}
+              isDesktopApp={isDesktopApp}
+              handleThemeChange={handleThemeChange}
+              handleSendBehaviorChange={handleSendBehaviorChange}
+              handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
+              handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
+            />
           );
         case "shortcuts":
           return isDesktopApp ? <KeyboardShortcutsSection /> : null;
@@ -1134,7 +1198,13 @@ export default function SettingsScreen({ view }: SettingsScreenProps) {
             />
           );
         case "about":
-          return <AboutSection appVersionText={appVersionText} isDesktopApp={isDesktopApp} />;
+          return (
+            <AboutSection
+              appVersion={appVersion}
+              appVersionText={appVersionText}
+              isDesktopApp={isDesktopApp}
+            />
+          );
       }
     }
     return null;
@@ -1294,10 +1364,16 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
+  aboutVersionMismatch: {
+    color: theme.colors.palette.amber[500],
+  },
   aboutErrorText: {
     color: theme.colors.palette.red[300],
     fontSize: theme.fontSize.xs,
     marginTop: theme.spacing[1],
+  },
+  aboutCommunity: {
+    marginTop: theme.spacing[4],
   },
   aboutUpdateActions: {
     flexDirection: "row",

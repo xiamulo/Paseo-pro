@@ -139,6 +139,7 @@ Single file, validated with `PersistedConfigSchema`.
     listen: "127.0.0.1:6767",
     hostnames: true | string[],   // legacy alias `allowedHosts` is migrated on load
     mcp: { enabled: boolean, injectIntoAgents: boolean },
+    appendSystemPrompt: string,    // appended to supported provider system/developer prompts
     cors: { allowedOrigins: string[] },
     relay: { enabled: boolean, endpoint: string, publicEndpoint: string, useTls: boolean, publicUseTls: boolean },
     auth: { password: string }    // bcrypt hash, optional
@@ -154,7 +155,10 @@ Single file, validated with `PersistedConfigSchema`.
     // ProviderOverrideSchema; legacy entries with `command: { mode, ... }` are migrated to the
     // current shape on load via `migrateProviderSettings`. Custom provider IDs must declare
     // `extends` (one of the built-ins or `"acp"`) and `label`. See `provider-launch-config.ts`.
-    providers: Record<providerId, ProviderOverride>
+    providers: Record<providerId, ProviderOverride>,
+    metadataGeneration: {
+      providers: [{ provider, model?, thinkingOptionId? }]
+    }
   },
   features: {
     dictation: { enabled, stt: { provider, model, language, confidenceThreshold } },

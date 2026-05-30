@@ -8,7 +8,7 @@ import { basename, resolve, sep } from "path";
 import { homedir } from "node:os";
 import { z } from "zod";
 import type { ToolSet } from "ai";
-import { CLIENT_CAPS, type ClientCapability } from "../shared/client-capabilities.js";
+import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import {
   isLegacyEditorTargetId,
   serializeAgentStreamEvent,
@@ -20,6 +20,7 @@ import {
   type FileExplorerRequest,
   type FileDownloadTokenRequest,
   type GitSetupOptions,
+  type CheckoutRenameBranchRequest,
   type StartWorkspaceScriptRequest,
   type CloseItemsRequest,
   type SubscribeCheckoutDiffRequest,
@@ -37,7 +38,7 @@ import {
   encodeFileTransferFrame,
   FileTransferOpcode,
   type TerminalStreamFrame,
-} from "../shared/binary-frames/index.js";
+} from "@getpaseo/protocol/binary-frames/index";
 import { CursorError } from "./pagination/cursor.js";
 import { SortablePager, type SortSpec } from "./pagination/sortable-pager.js";
 import { TTSManager } from "./agent/tts-manager.js";
@@ -67,8 +68,11 @@ import { ensureAgentLoaded } from "./agent/agent-loading.js";
 import {
   formatSystemNotificationPrompt,
   sendPromptToAgent,
+  waitForAgentRunStartWithTimeout,
   unarchiveAgentState,
 } from "./agent/agent-prompt.js";
+import { resolveCreateAgentTitles } from "./agent/create-agent-title.js";
+import { respondToAgentPermission } from "./agent/permission-response.js";
 import { experimental_createMCPClient } from "ai";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "./voice-types.js";
@@ -81,20 +85,14 @@ import type { ScriptHealthState } from "./script-health-monitor.js";
 import { spawnWorkspaceScript } from "./worktree-bootstrap.js";
 import type { WorkspaceScriptRuntimeStore } from "./workspace-script-runtime-store.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
-import { applyMutableProviderConfigToOverrides } from "./daemon-config-store.js";
-import { getErrorMessage, getErrorMessageOr } from "../shared/error-utils.js";
-import { getAgentStatusPriority } from "../shared/agent-state-bucket.js";
+import { getErrorMessage, getErrorMessageOr } from "@getpaseo/protocol/error-utils";
+import { getAgentStatusPriority } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   WorkspaceGitRuntimeSnapshot,
   WorkspaceGitService,
   WorkspaceGitSnapshotOptions,
 } from "./workspace-git-service.js";
 
-import { buildProviderRegistry } from "./agent/provider-registry.js";
-import type {
-  AgentProviderRuntimeSettingsMap,
-  ProviderOverride,
-} from "./agent/provider-launch-config.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { ProviderSnapshotManager, resolveSnapshotCwd } from "./agent/provider-snapshot-manager.js";
 import type {
@@ -103,8 +101,14 @@ import type {
   AgentTimelineFetchDirection,
   ManagedAgent,
 } from "./agent/agent-manager.js";
-import { scheduleAgentMetadataGeneration } from "./agent/agent-metadata-generator.js";
-import { resolveCreateAgentTitles } from "./agent/create-agent-title.js";
+import { createAgentCommand } from "./agent/create-agent/create.js";
+import {
+  archiveAgentCommand,
+  cancelAgentRunCommand,
+  closeAgentCommand,
+  setAgentModeCommand,
+  updateAgentCommand,
+} from "./agent/lifecycle-command.js";
 import {
   buildStoredAgentPayload,
   resolveEffectiveThinkingOptionId,
@@ -122,11 +126,14 @@ import {
   type TimelineProjectionMode,
 } from "./agent/timeline-projection.js";
 import {
-  DEFAULT_STRUCTURED_GENERATION_PROVIDERS,
   StructuredAgentFallbackError,
   StructuredAgentResponseError,
   generateStructuredAgentResponseWithFallback,
 } from "./agent/agent-response-loop.js";
+import {
+  resolveStructuredGenerationProviders,
+  type StructuredGenerationDaemonConfig,
+} from "./agent/structured-generation-providers.js";
 import {
   getAgentStreamEventTurnId,
   type AgentPersistenceHandle,
@@ -136,7 +143,6 @@ import {
   type AgentPromptInput,
   type AgentRunOptions,
   type AgentSessionConfig,
-  type AgentStreamEvent,
   type ProviderSnapshotEntry,
 } from "./agent/agent-sdk-types.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
@@ -195,7 +201,9 @@ import {
   pullCurrentBranch,
   pushCurrentBranch,
   createPullRequest,
+  renameCurrentBranch,
 } from "../utils/checkout-git.js";
+import { validateBranchSlug } from "@getpaseo/protocol/branch-slug";
 import { getProjectIcon } from "../utils/project-icon.js";
 import { expandTilde } from "../utils/path.js";
 import { searchHomeDirectories, searchWorkspaceEntries } from "../utils/directory-suggestions.js";
@@ -209,7 +217,6 @@ import type { LocalSpeechModelId } from "./speech/providers/local/models.js";
 import { toResolver, type Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot, SpeechReadinessState } from "./speech/speech-runtime.js";
 import type pino from "pino";
-import { resolveClientMessageId } from "./client-message-id.js";
 import {
   ChatServiceError,
   FileBackedChatService,
@@ -250,6 +257,7 @@ import {
   handleWorkspaceSetupStatusRequest as handleWorkspaceSetupStatusRequestMessage,
 } from "./worktree-session.js";
 import { toWorktreeWireError } from "./worktree-errors.js";
+import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 
 const WORKSPACE_GIT_WATCH_REMOVED_STATE_KEY = "__removed__";
 
@@ -309,8 +317,8 @@ type GitMutationRefreshReason =
   | "disable-pr-auto-merge"
   | "create-pr"
   | "switch-branch"
-  | "create-branch"
   | "rename-branch"
+  | "create-branch"
   | "stash-push"
   | "stash-pop"
   | "create-worktree";
@@ -319,6 +327,14 @@ type GitMutationRefreshReason =
 // Clients before 0.1.45 validate providers with z.enum(["claude", "codex", "opencode"]) and reject
 // the entire session message if they encounter an unknown provider.
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
+// COMPAT(customModeIcons): the only mode icons known to clients before v0.1.84. Any
+// other icon name is downgraded to "ShieldCheck" for those clients.
+const LEGACY_MODE_ICONS = new Set<string>([
+  "ShieldCheck",
+  "ShieldAlert",
+  "ShieldOff",
+  "ShieldQuestionMark",
+]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_FLEXIBLE_EDITOR_IDS = "0.1.50";
 
@@ -432,6 +448,7 @@ type ProcessingPhase = "idle" | "transcribing";
 
 interface WorkspaceGitWatchTarget {
   cwd: string;
+  workspaceId: string;
   watchers: FSWatcher[];
   debounceTimer: ReturnType<typeof setTimeout> | null;
   refreshPromise: Promise<void> | null;
@@ -568,7 +585,7 @@ export interface SessionOptions {
   sttLanguage?: string;
   tts: Resolvable<TextToSpeechProvider | null>;
   terminalManager: TerminalManager | null;
-  providerSnapshotManager?: ProviderSnapshotManager;
+  providerSnapshotManager: ProviderSnapshotManager;
   scriptRouteStore?: ScriptRouteStore;
   scriptRuntimeStore?: WorkspaceScriptRuntimeStore;
   workspaceSetupSnapshots?: Map<string, WorkspaceSetupSnapshot>;
@@ -595,9 +612,6 @@ export interface SessionOptions {
     sttLanguage?: string;
     getSpeechReadiness?: () => SpeechReadinessSnapshot;
   };
-  agentProviderRuntimeSettings?: AgentProviderRuntimeSettingsMap;
-  providerOverrides?: Record<string, ProviderOverride>;
-  isDev?: boolean;
   serverId?: string;
   daemonVersion?: string;
   daemonRuntimeConfig?: {
@@ -786,7 +800,7 @@ export class Session {
     appVisibilityChangedAt: Date;
   } | null = null;
   private readonly terminalManager: TerminalManager | null;
-  private readonly providerSnapshotManager: ProviderSnapshotManager | null;
+  private readonly providerSnapshotManager: ProviderSnapshotManager;
   private unsubscribeProviderSnapshotEvents: (() => void) | null = null;
   private readonly scriptRouteStore: ScriptRouteStore | null;
   private readonly scriptRuntimeStore: WorkspaceScriptRuntimeStore | null;
@@ -828,12 +842,10 @@ export class Session {
   private unregisterVoiceCallerContext?: (agentId: string) => void;
   private getSpeechReadiness?: () => SpeechReadinessSnapshot;
   private readonly sttLanguage: string;
-  private readonly agentProviderRuntimeSettings: AgentProviderRuntimeSettingsMap | undefined;
-  private readonly providerOverrides: Record<string, ProviderOverride> | undefined;
-  private readonly isDev: boolean;
   private readonly serverId: string | undefined;
   private readonly daemonVersion: string | undefined;
   private readonly daemonRuntimeConfig: SessionOptions["daemonRuntimeConfig"];
+  private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
   private voiceModeAgentId: string | null = null;
   private voiceModeBaseConfig: VoiceModeBaseConfig | null = null;
 
@@ -876,9 +888,6 @@ export class Session {
       voice,
       voiceBridge,
       dictation,
-      agentProviderRuntimeSettings,
-      providerOverrides,
-      isDev,
       serverId,
       daemonVersion,
       daemonRuntimeConfig,
@@ -919,7 +928,36 @@ export class Session {
       isPathWithinRoot: (rootPath, candidatePath) => this.isPathWithinRoot(rootPath, candidatePath),
       sessionLogger: this.sessionLogger,
     });
-    this.providerSnapshotManager = providerSnapshotManager ?? null;
+    this.createAgentLifecycleDispatch = new CreateAgentLifecycleDispatch({
+      paseoHome: this.paseoHome,
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      github: this.github,
+      workspaceGitService: this.workspaceGitService,
+      createPaseoWorktreeWorkflow: (input, workflowOptions) =>
+        this.createPaseoWorktreeWorkflow(input, workflowOptions),
+      archiveAgentForClose: (agentId) => this.archiveAgentForClose(agentId),
+      archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
+      emit: (message) => this.emit(message),
+      emitAgentRemove: (agentId) => {
+        if (this.agentUpdatesSubscription) {
+          this.bufferOrEmitAgentUpdate(this.agentUpdatesSubscription, {
+            kind: "remove",
+            agentId,
+          });
+        }
+      },
+      emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds) =>
+        this.emitWorkspaceUpdatesForWorkspaceIds(workspaceIds),
+      markWorkspaceArchiving: (workspaceIds, archivingAt) =>
+        this.markWorkspaceArchiving(workspaceIds, archivingAt),
+      clearWorkspaceArchiving: (workspaceIds) => this.clearWorkspaceArchiving(workspaceIds),
+      isPathWithinRoot: (rootPath, candidatePath) => this.isPathWithinRoot(rootPath, candidatePath),
+      killTerminalsUnderPath: (rootPath) =>
+        this.terminalController.killTerminalsUnderPath(rootPath),
+      logger: this.sessionLogger,
+    });
+    this.providerSnapshotManager = providerSnapshotManager;
     this.scriptRouteStore = scriptRouteStore ?? null;
     this.scriptRuntimeStore = scriptRuntimeStore ?? null;
     this.workspaceSetupSnapshots = workspaceSetupSnapshots ?? new Map();
@@ -930,9 +968,6 @@ export class Session {
     this.sttLanguage = sttLanguage ?? "en";
     this.subscribeToOptionalManagers();
     this.bindVoiceBridges({ voice, voiceBridge, dictation });
-    this.agentProviderRuntimeSettings = agentProviderRuntimeSettings;
-    this.providerOverrides = providerOverrides;
-    this.isDev = isDev === true;
     this.serverId = serverId;
     this.daemonVersion = daemonVersion;
     this.daemonRuntimeConfig = daemonRuntimeConfig;
@@ -967,6 +1002,25 @@ export class Session {
 
   supports(capability: ClientCapability): boolean {
     return this.clientCapabilities.has(capability);
+  }
+
+  // COMPAT(customModeIcons): rewrite icons unknown to v0.1.83 clients (whose MODE_ICONS
+  // map is a closed enum and would render `undefined`, crashing in render). Drop
+  // this and the cap gate when floor >= v0.1.84.
+  private downgradeModeIconsForClient<T extends { icon?: string }>(modes: T[]): T[] {
+    if (this.supports(CLIENT_CAPS.customModeIcons)) return modes;
+    return modes.map((mode) =>
+      mode.icon && !LEGACY_MODE_ICONS.has(mode.icon) ? { ...mode, icon: "ShieldCheck" } : mode,
+    );
+  }
+
+  private downgradeEntryModesForClient<T extends { modes?: { icon?: string }[] }>(
+    entries: T[],
+  ): T[] {
+    if (this.supports(CLIENT_CAPS.customModeIcons)) return entries;
+    return entries.map((entry) =>
+      entry.modes ? { ...entry, modes: this.downgradeModeIconsForClient(entry.modes) } : entry,
+    );
   }
 
   async syncWorkspaceGitObserverForWorkspace(workspace: PersistedWorkspaceRecord): Promise<void> {
@@ -1017,6 +1071,37 @@ export class Session {
     appVisibilityChangedAt: Date;
   } | null {
     return this.clientActivity;
+  }
+
+  private getFocusedAgentSelectionForCwd(cwd: string):
+    | {
+        provider?: string | null;
+        model?: string | null;
+        thinkingOptionId?: string | null;
+      }
+    | undefined {
+    const focusedAgentId = this.clientActivity?.focusedAgentId;
+    if (!focusedAgentId) {
+      return undefined;
+    }
+
+    const agent = this.agentManager.getAgent(focusedAgentId);
+    if (!agent || agent.cwd !== cwd) {
+      return undefined;
+    }
+
+    return {
+      provider: agent.provider,
+      model: agent.runtimeInfo?.model ?? agent.config.model ?? null,
+      thinkingOptionId:
+        agent.runtimeInfo?.thinkingOptionId ?? agent.config.thinkingOptionId ?? null,
+    };
+  }
+
+  private readStructuredGenerationDaemonConfig(): StructuredGenerationDaemonConfig {
+    return {
+      metadataGeneration: this.daemonConfigStore.get().metadataGeneration,
+    };
   }
 
   public getRuntimeMetrics(): SessionRuntimeMetrics {
@@ -1118,52 +1203,6 @@ export class Session {
     return this.agentManager.hasInFlightRun(agentId);
   }
 
-  /**
-   * Start streaming an agent run and forward results via the websocket broadcast
-   */
-  private startAgentStream(
-    agentId: string,
-    prompt: AgentPromptInput,
-    runOptions?: AgentRunOptions,
-  ): { ok: true } | { ok: false; error: string } {
-    this.sessionLogger.trace(
-      {
-        agentId,
-        promptType: typeof prompt === "string" ? "string" : "structured",
-        hasRunOptions: Boolean(runOptions),
-      },
-      "agent.session.start_stream.request",
-    );
-    let iterator: AsyncGenerator<AgentStreamEvent>;
-    try {
-      const shouldReplace = this.agentManager.hasInFlightRun(agentId);
-      iterator = shouldReplace
-        ? this.agentManager.replaceAgentRun(agentId, prompt, runOptions)
-        : this.agentManager.streamAgent(agentId, prompt, runOptions);
-      this.sessionLogger.trace(
-        { agentId, shouldReplace },
-        "agent.session.start_stream.iterator_returned",
-      );
-    } catch (error) {
-      this.handleAgentRunError(agentId, error, "Failed to start agent run");
-      return { ok: false, error: errorToFriendlyMessage(error) };
-    }
-
-    void (async () => {
-      try {
-        for await (const _ of iterator) {
-          // Events are forwarded via the session's AgentManager subscription.
-        }
-        this.sessionLogger.trace({ agentId }, "agent.session.iterator.drained");
-      } catch (error) {
-        this.sessionLogger.trace({ agentId, err: error }, "agent.session.iterator.error");
-        this.handleAgentRunError(agentId, error, "Agent stream failed");
-      }
-    })();
-
-    return { ok: true };
-  }
-
   private handleAgentRunError(agentId: string, error: unknown, context: string): void {
     const message = errorToFriendlyMessage(error);
     this.sessionLogger.error({ err: error, agentId, context }, `${context} for agent ${agentId}`);
@@ -1208,26 +1247,25 @@ export class Session {
    */
   private subscribeToOptionalManagers(): void {
     this.terminalController.start();
-    if (this.providerSnapshotManager) {
-      const handleProviderSnapshotChange = (entries: ProviderSnapshotEntry[], cwd: string) => {
-        // COMPAT(providersSnapshot): keep provider visibility gating for older clients.
-        const visibleEntries = entries.filter((entry) =>
-          this.isProviderVisibleToClient(entry.provider),
-        );
-        this.emit({
-          type: "providers_snapshot_update",
-          payload: {
-            cwd,
-            entries: visibleEntries,
-            generatedAt: new Date().toISOString(),
-          },
-        });
-      };
-      this.providerSnapshotManager.on("change", handleProviderSnapshotChange);
-      this.unsubscribeProviderSnapshotEvents = () => {
-        this.providerSnapshotManager?.off("change", handleProviderSnapshotChange);
-      };
-    }
+    const handleProviderSnapshotChange = (entries: ProviderSnapshotEntry[], cwd: string) => {
+      // COMPAT(providersSnapshot): keep provider visibility gating for older clients.
+      const visibleEntries = entries.filter((entry) =>
+        this.isProviderVisibleToClient(entry.provider),
+      );
+      const snapshotCwd = cwd === resolveSnapshotCwd() ? undefined : cwd;
+      this.emit({
+        type: "providers_snapshot_update",
+        payload: {
+          ...(snapshotCwd ? { cwd: snapshotCwd } : {}),
+          entries: this.downgradeEntryModesForClient(visibleEntries),
+          generatedAt: new Date().toISOString(),
+        },
+      });
+    };
+    this.providerSnapshotManager.on("change", handleProviderSnapshotChange);
+    this.unsubscribeProviderSnapshotEvents = () => {
+      this.providerSnapshotManager.off("change", handleProviderSnapshotChange);
+    };
   }
 
   private bindVoiceBridges(params: {
@@ -1371,7 +1409,7 @@ export class Session {
 
   private async buildAgentPayload(agent: ManagedAgent): Promise<AgentSnapshotPayload> {
     const storedRecord = await this.agentStorage.get(agent.id);
-    const title = storedRecord?.title ?? storedRecord?.config?.title ?? null;
+    const title = storedRecord?.title ?? null;
     const payload = toAgentPayload(agent, { title });
     const storedUpdatedAt = storedRecord ? resolveStoredAgentPayloadUpdatedAt(storedRecord) : null;
     if (storedUpdatedAt) {
@@ -1385,25 +1423,9 @@ export class Session {
     return payload;
   }
 
-  private getProviderRegistry(): ReturnType<typeof buildProviderRegistry> {
-    return buildProviderRegistry(this.sessionLogger, {
-      runtimeSettings: this.agentProviderRuntimeSettings,
-      providerOverrides: applyMutableProviderConfigToOverrides(
-        this.providerOverrides,
-        this.daemonConfigStore.get().providers,
-      ),
-      workspaceGitService: this.workspaceGitService,
-      isDev: this.isDev,
-    });
-  }
-
-  private getRegisteredProviderIds(): AgentProvider[] {
-    return Object.keys(this.getProviderRegistry());
-  }
-
   private buildStoredAgentPayload(
     record: StoredAgentRecord,
-    registeredProviderIds = this.getRegisteredProviderIds(),
+    registeredProviderIds = this.providerSnapshotManager.listRegisteredProviderIds(),
   ): AgentSnapshotPayload {
     return buildStoredAgentPayload(record, registeredProviderIds);
   }
@@ -1730,6 +1752,7 @@ export class Session {
   private async dispatchInboundMessage(msg: SessionInboundMessage): Promise<void> {
     const promise =
       this.dispatchVoiceAndControlMessage(msg) ??
+      this.dispatchAgentRewindMessage(msg) ??
       this.dispatchAgentLifecycleMessage(msg) ??
       this.dispatchAgentSearchMessage(msg) ??
       this.dispatchAgentConfigMessage(msg) ??
@@ -1787,6 +1810,15 @@ export class Session {
         });
         return undefined;
       }
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchAgentRewindMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "agent.rewind.request":
+        return this.handleAgentRewindRequest(msg);
       default:
         return undefined;
     }
@@ -2046,12 +2078,8 @@ export class Session {
         return undefined;
       case "checkout_switch_branch_request":
         return this.handleCheckoutSwitchBranchRequest(msg);
-      case "stash_save_request":
-        return this.handleStashSaveRequest(msg);
-      case "stash_pop_request":
-        return this.handleStashPopRequest(msg);
-      case "stash_list_request":
-        return this.handleStashListRequest(msg);
+      case "checkout.rename_branch.request":
+        return this.handleCheckoutRenameBranchRequest(msg);
       case "checkout_commit_request":
         return this.handleCheckoutCommitRequest(msg);
       case "checkout_merge_request":
@@ -2062,6 +2090,8 @@ export class Session {
         return this.handleCheckoutPullRequest(msg);
       case "checkout_push_request":
         return this.handleCheckoutPushRequest(msg);
+      case "checkout.refresh.request":
+        return this.handleCheckoutRefreshRequest(msg);
       case "checkout_pr_create_request":
         return this.handleCheckoutPrCreateRequest(msg);
       case "checkout_pr_merge_request":
@@ -2074,6 +2104,12 @@ export class Session {
         return this.handlePullRequestTimelineRequest(msg);
       case "github_search_request":
         return this.handleGitHubSearchRequest(msg);
+      case "stash_save_request":
+        return this.handleStashSaveRequest(msg);
+      case "stash_pop_request":
+        return this.handleStashPopRequest(msg);
+      case "stash_list_request":
+        return this.handleStashListRequest(msg);
       default:
         return undefined;
     }
@@ -2280,7 +2316,7 @@ export class Session {
     beginAgentDeleteIfSupported(this.agentStorage, agentId);
 
     try {
-      await this.agentManager.closeAgent(agentId);
+      await closeAgentCommand({ agentManager: this.agentManager }, agentId);
     } catch (error) {
       this.sessionLogger.warn(
         { err: error, agentId },
@@ -2334,43 +2370,17 @@ export class Session {
     });
   }
 
-  private async archiveStoredAgentForClose(
-    agentId: string,
-  ): Promise<{ agentId: string; archivedAt: string }> {
-    const existing = await this.agentStorage.get(agentId);
-    if (!existing) {
-      throw new Error(`Agent not found: ${agentId}`);
-    }
-
-    if (existing.archivedAt) {
-      return {
-        agentId,
-        archivedAt: existing.archivedAt,
-      };
-    }
-
-    const archivedAt = new Date().toISOString();
-    await this.agentManager.archiveSnapshot(agentId, archivedAt);
-
-    return { agentId, archivedAt };
-  }
-
   private async archiveAgentForClose(
     agentId: string,
   ): Promise<{ agentId: string; archivedAt: string }> {
-    const liveAgent = this.agentManager.getAgent(agentId);
-    if (liveAgent) {
-      await this.interruptAgentIfRunning(agentId);
-      await this.agentManager.clearAgentAttention(agentId).catch(() => undefined);
-      await this.agentManager.archiveAgent(agentId);
-    } else {
-      await this.archiveStoredAgentForClose(agentId);
-    }
-
-    const archivedRecord = await this.agentStorage.get(agentId);
-    if (!archivedRecord) {
-      throw new Error(`Agent not found in storage after archive: ${agentId}`);
-    }
+    const { archivedAt, record: archivedRecord } = await archiveAgentCommand(
+      {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      },
+      agentId,
+    );
 
     if (this.agentUpdatesSubscription) {
       const payload = this.buildStoredAgentPayload(archivedRecord);
@@ -2403,11 +2413,7 @@ export class Session {
       await this.emitWorkspaceUpdateForCwd(payload.cwd);
     }
 
-    if (!archivedRecord.archivedAt) {
-      throw new Error(`Agent missing archivedAt after archive: ${agentId}`);
-    }
-
-    return { agentId, archivedAt: archivedRecord.archivedAt };
+    return { agentId, archivedAt };
   }
 
   private async handleCloseItemsRequest(msg: CloseItemsRequest): Promise<void> {
@@ -2482,27 +2488,24 @@ export class Session {
       "session: update_agent_request",
     );
 
-    const normalizedName = name?.trim();
-    const normalizedLabels = labels && Object.keys(labels).length > 0 ? labels : undefined;
-
-    if (!normalizedName && !normalizedLabels) {
-      this.emit({
-        type: "update_agent_response",
-        payload: {
-          requestId,
-          agentId,
-          accepted: false,
-          error: "Nothing to update (provide name and/or labels)",
-        },
-      });
-      return;
-    }
-
     try {
-      await this.agentManager.updateAgentMetadata(agentId, {
-        ...(normalizedName ? { title: normalizedName } : {}),
-        ...(normalizedLabels ? { labels: normalizedLabels } : {}),
-      });
+      const result = await updateAgentCommand(
+        { agentManager: this.agentManager },
+        { agentId, name, labels },
+      );
+
+      if (!result.accepted) {
+        this.emit({
+          type: "update_agent_response",
+          payload: {
+            requestId,
+            agentId,
+            accepted: false,
+            error: result.error,
+          },
+        });
+        return;
+      }
 
       this.emit({
         type: "update_agent_response",
@@ -3045,7 +3048,6 @@ export class Session {
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         agentId,
-        userMessageText: text,
         prompt,
         messageId,
         runOptions,
@@ -3075,9 +3077,12 @@ export class Session {
       clientMessageId,
       outputSchema,
       git,
+      worktree,
+      autoArchive,
       images,
       attachments,
       labels,
+      env,
     } = msg;
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
@@ -3086,73 +3091,92 @@ export class Session {
       }`,
     );
 
+    let createdWorktreeForCleanup: CreatePaseoWorktreeWorkflowResult | null = null;
+    let createdAgentId: string | null = null;
     try {
       const trimmedPrompt = initialPrompt?.trim();
       const { explicitTitle, provisionalTitle } = resolveCreateAgentTitles({
         configTitle: config.title,
         initialPrompt: trimmedPrompt,
       });
-      const resolvedConfig: AgentSessionConfig = {
-        ...config,
-        ...(provisionalTitle ? { title: provisionalTitle } : {}),
-      };
 
       const firstAgentContext: FirstAgentContext = {
         ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       };
-      const { sessionConfig, setupContinuation } = await this.buildAgentSessionConfig(
-        resolvedConfig,
-        git,
-        worktreeName,
+      const createdWorktree = await this.createAgentLifecycleDispatch.createWorktreeForRequest({
+        cwd: config.cwd,
+        target: worktree,
         firstAgentContext,
-      );
-      let resolvedWorkspace = msg.workspaceId
-        ? await this.workspaceRegistry.get(msg.workspaceId)
-        : ((await this.findWorkspaceByDirectory(sessionConfig.cwd)) ??
-          (await this.findOrCreateWorkspaceForDirectory(sessionConfig.cwd)));
-      if (!resolvedWorkspace) {
-        throw new Error(`Workspace not found: ${msg.workspaceId}`);
-      }
-      const snapshot = await this.agentManager.createAgent(sessionConfig, undefined, {
-        labels,
-        workspaceId: resolvedWorkspace.workspaceId,
-        initialPrompt: trimmedPrompt,
+        hasLegacyGitOptions: Boolean(git),
       });
-      await this.forwardAgentUpdate(snapshot);
+      createdWorktreeForCleanup = createdWorktree;
+      const createAgentConfig: AgentSessionConfig = createdWorktree
+        ? { ...config, cwd: createdWorktree.worktree.worktreePath }
+        : config;
 
-      await this.sendInitialCreateAgentPrompt({
-        snapshot,
-        trimmedPrompt,
-        images,
-        attachments,
-        clientMessageId,
-        outputSchema,
-        explicitTitle,
+      const { snapshot, liveSnapshot } = await createAgentCommand(
+        {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.sessionLogger,
+          paseoHome: this.paseoHome,
+          workspaceGitService: this.workspaceGitService,
+          providerSnapshotManager: this.providerSnapshotManager,
+          daemonConfig: this.readStructuredGenerationDaemonConfig(),
+        },
+        {
+          kind: "session",
+          config: createAgentConfig,
+          workspaceId: msg.workspaceId,
+          worktreeName,
+          initialPrompt,
+          clientMessageId,
+          outputSchema,
+          images,
+          attachments,
+          git,
+          labels,
+          env,
+          provisionalTitle,
+          explicitTitle,
+          firstAgentContext,
+          buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>
+            this.buildAgentSessionConfig(sessionConfig, gitOptions, legacyWorktreeName, ctx),
+          resolveWorkspace: ({ cwd, workspaceId }) =>
+            this.resolveCreateAgentWorkspace(cwd, workspaceId),
+        },
+      );
+      createdAgentId = snapshot.id;
+      await this.forwardAgentUpdate(snapshot);
+      this.createAgentLifecycleDispatch.registerAutoArchiveIfRequested({
+        autoArchive,
+        agentId: snapshot.id,
+        createdWorktree,
       });
 
       if (requestId) {
-        const agentPayload = await this.buildAgentPayload(snapshot);
+        const agentPayload = await this.buildAgentPayload(liveSnapshot);
         this.emit({
           type: "status",
           payload: {
             status: "agent_created",
-            agentId: snapshot.id,
+            agentId: liveSnapshot.id,
             requestId,
             agent: agentPayload,
           },
         });
       }
 
-      setupContinuation?.startAfterAgentCreate({
-        agentId: snapshot.id,
-      });
-
       this.sessionLogger.info(
         { agentId: snapshot.id, provider: snapshot.provider },
         `Created agent ${snapshot.id} (${snapshot.provider})`,
       );
     } catch (error) {
+      await this.createAgentLifecycleDispatch.cleanupCreatedWorktreeAfterFailedAgentCreate({
+        createdWorktree: createdWorktreeForCleanup,
+        createdAgentId,
+      });
       const wireError = toWorktreeWireError(error);
       this.sessionLogger.error({ err: error }, "Failed to create agent");
       if (requestId) {
@@ -3178,44 +3202,18 @@ export class Session {
     }
   }
 
-  private async sendInitialCreateAgentPrompt(params: {
-    snapshot: { id: string; cwd: string };
-    trimmedPrompt: string | undefined;
-    images: Array<{ data: string; mimeType: string }> | undefined;
-    attachments: AgentAttachment[] | undefined;
-    clientMessageId: string | undefined;
-    outputSchema: Record<string, unknown> | undefined;
-    explicitTitle: string | null;
-  }): Promise<void> {
-    const { snapshot, trimmedPrompt, images, attachments, clientMessageId, outputSchema } = params;
-    const hasPrompt = Boolean(trimmedPrompt);
-    const hasImages = (images?.length ?? 0) > 0;
-    const hasAttachments = (attachments?.length ?? 0) > 0;
-    if (!hasPrompt && !hasImages && !hasAttachments) {
-      return;
+  private async resolveCreateAgentWorkspace(
+    cwd: string,
+    workspaceId?: string,
+  ): Promise<{ workspaceId: string }> {
+    const resolvedWorkspace = workspaceId
+      ? await this.workspaceRegistry.get(workspaceId)
+      : ((await this.findWorkspaceByDirectory(cwd)) ??
+        (await this.findOrCreateWorkspaceForDirectory(cwd)));
+    if (!resolvedWorkspace) {
+      throw new Error(`Workspace not found: ${workspaceId}`);
     }
-    scheduleAgentMetadataGeneration({
-      agentManager: this.agentManager,
-      agentId: snapshot.id,
-      cwd: snapshot.cwd,
-      workspaceGitService: this.workspaceGitService,
-      initialPrompt: trimmedPrompt,
-      explicitTitle: params.explicitTitle,
-      paseoHome: this.paseoHome,
-      logger: this.sessionLogger,
-    });
-
-    const started = await this.handleSendAgentMessage(
-      snapshot.id,
-      trimmedPrompt || "",
-      resolveClientMessageId(clientMessageId),
-      images,
-      attachments,
-      outputSchema ? { outputSchema } : undefined,
-    );
-    if (!started.ok) {
-      throw new Error(started.error);
-    }
+    return { workspaceId: resolvedWorkspace.workspaceId };
   }
 
   private async handleResumeAgentRequest(
@@ -3323,9 +3321,12 @@ export class Session {
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         workspaceGitService: this.workspaceGitService,
+        providerSnapshotManager: this.providerSnapshotManager,
+        daemonConfig: this.readStructuredGenerationDaemonConfig(),
         paseoHome: this.paseoHome,
         logger: this.sessionLogger,
       });
+      await this.registerWorkspaceForImportedAgent(snapshot.cwd);
       await this.forwardAgentUpdate(snapshot);
       const agentPayload = await this.buildAgentPayload(snapshot);
       this.emit({
@@ -3381,11 +3382,11 @@ export class Session {
         if (!record) {
           throw new Error(`Agent not found: ${agentId}`);
         }
-        const providerRegistry = this.getProviderRegistry();
-        if (!isStoredAgentProviderAvailable(record, Object.keys(providerRegistry))) {
+        const registeredProviderIds = this.providerSnapshotManager.listRegisteredProviderIds();
+        if (!isStoredAgentProviderAvailable(record, registeredProviderIds)) {
           throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
         }
-        const handle = toAgentPersistenceHandle(providerRegistry, record.persistence);
+        const handle = toAgentPersistenceHandle(registeredProviderIds, record.persistence);
         if (!handle) {
           throw new Error(`Agent ${agentId} cannot be refreshed because it lacks persistence`);
         }
@@ -3440,7 +3441,10 @@ export class Session {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
 
     try {
-      await this.interruptAgentIfRunning(agentId);
+      await cancelAgentRunCommand(
+        { agentManager: this.agentManager, logger: this.sessionLogger },
+        agentId,
+      );
       if (requestId) {
         const agent = this.agentManager.getAgent(agentId);
         const payload = agent ? await this.buildAgentPayload(agent) : null;
@@ -3455,6 +3459,33 @@ export class Session {
       }
     } catch (error) {
       this.handleAgentRunError(agentId, error, "Failed to cancel running agent on request");
+    }
+  }
+
+  private async handleAgentRewindRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.rewind.request" }>,
+  ): Promise<void> {
+    try {
+      await this.agentManager.rewind(msg.agentId, msg.messageId, msg.mode);
+      this.emit({
+        type: "agent.rewind.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          ok: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.rewind.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          ok: false,
+          error: error instanceof Error ? error.message : "Failed to rewind agent",
+        },
+      });
     }
   }
 
@@ -3530,6 +3561,9 @@ export class Session {
           agentManager: this.agentManager,
           cwd,
           workspaceGitService: this.workspaceGitService,
+          providerSnapshotManager: this.providerSnapshotManager,
+          daemonConfig: this.readStructuredGenerationDaemonConfig(),
+          currentSelection: this.getFocusedAgentSelectionForCwd(cwd),
           firstAgentContext,
           logger: this.sessionLogger,
         });
@@ -3574,47 +3608,6 @@ export class Session {
   ): Promise<void> {
     const cwd = resolveSnapshotCwd(msg.cwd ? expandTilde(msg.cwd) : undefined);
     const fetchedAt = new Date().toISOString();
-    const manager = this.providerSnapshotManager;
-
-    if (!manager) {
-      try {
-        const definition = this.getProviderRegistry()[msg.provider];
-        if (!definition.enabled) {
-          this.emitProviderDisabledResponse("models", msg.provider, msg.requestId, fetchedAt);
-          return;
-        }
-
-        const models = await definition.fetchModels({
-          cwd,
-          force: false,
-        });
-        this.emit({
-          type: "list_provider_models_response",
-          payload: {
-            provider: msg.provider,
-            models,
-            error: null,
-            fetchedAt,
-            requestId: msg.requestId,
-          },
-        });
-      } catch (error) {
-        this.sessionLogger.error(
-          { err: error, provider: msg.provider },
-          `Failed to list models for ${msg.provider}`,
-        );
-        this.emit({
-          type: "list_provider_models_response",
-          payload: {
-            provider: msg.provider,
-            error: getErrorMessage(error),
-            fetchedAt,
-            requestId: msg.requestId,
-          },
-        });
-      }
-      return;
-    }
 
     const entry = await this.getProviderSnapshotEntryForRead(cwd, msg.provider);
 
@@ -3671,53 +3664,14 @@ export class Session {
   ): Promise<void> {
     const fetchedAt = new Date().toISOString();
     const cwd = resolveSnapshotCwd(msg.cwd ? expandTilde(msg.cwd) : undefined);
-    const manager = this.providerSnapshotManager;
+    const entry = await this.getProviderSnapshotEntryForRead(cwd, msg.provider);
 
-    if (manager) {
-      const entry = await this.getProviderSnapshotEntryForRead(cwd, msg.provider);
-
-      if (!entry) {
-        this.emit({
-          type: "list_provider_modes_response",
-          payload: {
-            provider: msg.provider,
-            error: `Unknown provider: ${msg.provider}`,
-            fetchedAt,
-            requestId: msg.requestId,
-          },
-        });
-        return;
-      }
-
-      if (!entry.enabled) {
-        this.emitProviderDisabledResponse("modes", msg.provider, msg.requestId, fetchedAt);
-        return;
-      }
-
-      if (entry.status === "ready") {
-        this.emit({
-          type: "list_provider_modes_response",
-          payload: {
-            provider: msg.provider,
-            modes: entry.modes ?? [],
-            error: null,
-            fetchedAt: entry.fetchedAt ?? fetchedAt,
-            requestId: msg.requestId,
-          },
-        });
-        return;
-      }
-
-      const errorMessage =
-        entry.status === "error"
-          ? (entry.error ?? `Failed to list modes for ${msg.provider}`)
-          : `Provider ${msg.provider} is not available`;
-
+    if (!entry) {
       this.emit({
         type: "list_provider_modes_response",
         payload: {
           provider: msg.provider,
-          error: errorMessage,
+          error: `Unknown provider: ${msg.provider}`,
           fetchedAt,
           requestId: msg.requestId,
         },
@@ -3725,42 +3679,39 @@ export class Session {
       return;
     }
 
-    try {
-      const definition = this.getProviderRegistry()[msg.provider];
-      if (!definition.enabled) {
-        this.emitProviderDisabledResponse("modes", msg.provider, msg.requestId, fetchedAt);
-        return;
-      }
-
-      const modes = await definition.fetchModes({
-        cwd,
-        force: false,
-      });
-      this.emit({
-        type: "list_provider_modes_response",
-        payload: {
-          provider: msg.provider,
-          modes,
-          error: null,
-          fetchedAt,
-          requestId: msg.requestId,
-        },
-      });
-    } catch (error) {
-      this.sessionLogger.error(
-        { err: error, provider: msg.provider },
-        `Failed to list modes for ${msg.provider}`,
-      );
-      this.emit({
-        type: "list_provider_modes_response",
-        payload: {
-          provider: msg.provider,
-          error: getErrorMessage(error),
-          fetchedAt,
-          requestId: msg.requestId,
-        },
-      });
+    if (!entry.enabled) {
+      this.emitProviderDisabledResponse("modes", msg.provider, msg.requestId, fetchedAt);
+      return;
     }
+
+    if (entry.status === "ready") {
+      this.emit({
+        type: "list_provider_modes_response",
+        payload: {
+          provider: msg.provider,
+          modes: this.downgradeModeIconsForClient(entry.modes ?? []),
+          error: null,
+          fetchedAt: entry.fetchedAt ?? fetchedAt,
+          requestId: msg.requestId,
+        },
+      });
+      return;
+    }
+
+    const errorMessage =
+      entry.status === "error"
+        ? (entry.error ?? `Failed to list modes for ${msg.provider}`)
+        : `Provider ${msg.provider} is not available`;
+
+    this.emit({
+      type: "list_provider_modes_response",
+      payload: {
+        provider: msg.provider,
+        error: errorMessage,
+        fetchedAt,
+        requestId: msg.requestId,
+      },
+    });
   }
 
   private async getProviderSnapshotEntryForRead(
@@ -3768,10 +3719,6 @@ export class Session {
     provider: AgentProvider,
   ): Promise<ProviderSnapshotEntry | undefined> {
     const manager = this.providerSnapshotManager;
-    if (!manager) {
-      return undefined;
-    }
-
     const findEntry = () =>
       manager.getSnapshot(cwd).find((candidate) => candidate.provider === provider);
 
@@ -3956,15 +3903,13 @@ export class Session {
   ): Promise<void> {
     // COMPAT(providersSnapshot): keep legacy provider-list RPCs alongside snapshot flow.
     const entries = this.providerSnapshotManager
-      ? this.providerSnapshotManager
-          .getSnapshot(msg.cwd ? expandTilde(msg.cwd) : undefined)
-          .filter((entry) => this.isProviderVisibleToClient(entry.provider))
-      : [];
+      .getSnapshot(msg.cwd ? expandTilde(msg.cwd) : undefined)
+      .filter((entry) => this.isProviderVisibleToClient(entry.provider));
 
     this.emit({
       type: "get_providers_snapshot_response",
       payload: {
-        entries,
+        entries: this.downgradeEntryModesForClient(entries),
         generatedAt: new Date().toISOString(),
         requestId: msg.requestId,
       },
@@ -3975,12 +3920,12 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "refresh_providers_snapshot_request" }>,
   ): Promise<void> {
     if (msg.cwd) {
-      await this.providerSnapshotManager?.refreshSnapshotForCwd({
+      await this.providerSnapshotManager.refreshSnapshotForCwd({
         cwd: expandTilde(msg.cwd),
         providers: msg.providers,
       });
     } else {
-      await this.providerSnapshotManager?.refreshSettingsSnapshot({
+      await this.providerSnapshotManager.refreshSettingsSnapshot({
         providers: msg.providers,
       });
     }
@@ -3997,10 +3942,7 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "provider_diagnostic_request" }>,
   ): Promise<void> {
     try {
-      const client = this.getProviderRegistry()[msg.provider].createClient(this.sessionLogger);
-      const diagnostic = client.getDiagnostic
-        ? (await client.getDiagnostic()).diagnostic
-        : "No diagnostic available for this provider.";
+      const { diagnostic } = await this.providerSnapshotManager.getProviderDiagnostic(msg.provider);
       this.emit({
         type: "provider_diagnostic_response",
         payload: {
@@ -4084,6 +4026,12 @@ export class Session {
         patch.length > 0 ? patch : "(No diff available)",
       ].join("\n"),
     });
+    const providers = await resolveStructuredGenerationProviders({
+      cwd,
+      providerSnapshotManager: this.providerSnapshotManager,
+      daemonConfig: this.readStructuredGenerationDaemonConfig(),
+      currentSelection: this.getFocusedAgentSelectionForCwd(cwd),
+    });
     try {
       const result = await generateStructuredAgentResponseWithFallback({
         manager: this.agentManager,
@@ -4092,7 +4040,7 @@ export class Session {
         schema,
         schemaName: "CommitMessage",
         maxRetries: 2,
-        providers: DEFAULT_STRUCTURED_GENERATION_PROVIDERS,
+        providers,
         persistSession: false,
         agentConfigOverrides: {
           title: "Commit generator",
@@ -4156,6 +4104,12 @@ export class Session {
         patch.length > 0 ? patch : "(No diff available)",
       ].join("\n"),
     });
+    const providers = await resolveStructuredGenerationProviders({
+      cwd,
+      providerSnapshotManager: this.providerSnapshotManager,
+      daemonConfig: this.readStructuredGenerationDaemonConfig(),
+      currentSelection: this.getFocusedAgentSelectionForCwd(cwd),
+    });
     try {
       return await generateStructuredAgentResponseWithFallback({
         manager: this.agentManager,
@@ -4164,7 +4118,7 @@ export class Session {
         schema,
         schemaName: "PullRequest",
         maxRetries: 2,
-        providers: DEFAULT_STRUCTURED_GENERATION_PROVIDERS,
+        providers,
         persistSession: false,
         agentConfigOverrides: {
           title: "PR generator",
@@ -4283,7 +4237,7 @@ export class Session {
     this.sessionLogger.info({ agentId, modeId, requestId }, "session: set_agent_mode_request");
 
     try {
-      await this.agentManager.setAgentMode(agentId, modeId);
+      await setAgentModeCommand({ agentManager: this.agentManager }, { agentId, modeId });
       this.sessionLogger.info(
         { agentId, modeId, requestId },
         "session: set_agent_mode_request success",
@@ -4604,22 +4558,14 @@ export class Session {
     requestId: string,
     response: AgentPermissionResponse,
   ): Promise<void> {
-    this.sessionLogger.debug(
-      { agentId, requestId },
-      `Handling permission response for agent ${agentId}, request ${requestId}`,
-    );
-
     try {
-      const result = await this.agentManager.respondToPermission(agentId, requestId, response);
-      this.sessionLogger.debug({ agentId }, `Permission response forwarded to agent ${agentId}`);
-
-      if (result?.followUpPrompt) {
-        this.sessionLogger.debug(
-          { agentId },
-          "Permission response requires follow-up turn, starting agent stream",
-        );
-        this.startAgentStream(agentId, result.followUpPrompt);
-      }
+      await respondToAgentPermission({
+        agentManager: this.agentManager,
+        agentId,
+        requestId,
+        response,
+        logger: this.sessionLogger,
+      });
     } catch (error) {
       this.sessionLogger.error(
         { err: error, agentId, requestId },
@@ -4816,12 +4762,9 @@ export class Session {
 
     try {
       const workspaceCwd = cwd?.trim();
-      const baseDirectory = workspaceCwd
-        ? expandTilde(workspaceCwd)
-        : (process.env.HOME ?? homedir());
       const entries = workspaceCwd
         ? await searchWorkspaceEntries({
-            cwd: baseDirectory,
+            cwd: expandTilde(workspaceCwd),
             query,
             limit,
             includeFiles,
@@ -4842,7 +4785,6 @@ export class Session {
         type: "directory_suggestions_response",
         payload: {
           directories,
-          baseDirectory,
           entries,
           error: null,
           requestId,
@@ -4937,16 +4879,35 @@ export class Session {
     target.lastBranchName = workspace?.name ?? null;
   }
 
+  private handleWorkspaceGitBranchSnapshot(cwd: string, branchName: string | null): void {
+    const target = this.workspaceGitWatchTargets.get(normalizePersistedWorkspaceId(cwd));
+    if (!target) {
+      return;
+    }
+
+    const previousBranchName = target.lastBranchName;
+    if (branchName === previousBranchName) {
+      return;
+    }
+
+    target.lastBranchName = branchName;
+    this.onBranchChanged?.(target.workspaceId, previousBranchName, branchName);
+  }
+
   private syncWorkspaceGitObservers(workspaces: Iterable<WorkspaceDescriptorPayload>): void {
     for (const workspace of workspaces) {
       this.syncWorkspaceGitObserver(workspace.workspaceDirectory, {
         isGit: workspace.projectKind === "git",
+        workspaceId: workspace.id,
       });
       this.rememberWorkspaceGitDescriptorState(workspace.workspaceDirectory, workspace);
     }
   }
 
-  private syncWorkspaceGitObserver(cwd: string, options: { isGit: boolean }): void {
+  private syncWorkspaceGitObserver(
+    cwd: string,
+    options: { isGit: boolean; workspaceId: string },
+  ): void {
     const normalizedCwd = normalizePersistedWorkspaceId(cwd);
     if (!options.isGit) {
       this.removeWorkspaceGitSubscription(normalizedCwd);
@@ -4957,9 +4918,22 @@ export class Session {
       return;
     }
 
+    const target: WorkspaceGitWatchTarget = {
+      cwd: normalizedCwd,
+      workspaceId: options.workspaceId,
+      watchers: [],
+      debounceTimer: null,
+      refreshPromise: null,
+      refreshQueued: false,
+      latestDescriptorStateKey: null,
+      lastBranchName: null,
+    };
+    this.workspaceGitWatchTargets.set(normalizedCwd, target);
+
     const subscription = this.workspaceGitService.registerWorkspace(
       { cwd: normalizedCwd },
       (snapshot) => {
+        this.handleWorkspaceGitBranchSnapshot(normalizedCwd, snapshot.git.currentBranch ?? null);
         void this.emitWorkspaceUpdateForCwd(normalizedCwd);
         this.emitCheckoutStatusUpdate(normalizedCwd, snapshot);
       },
@@ -5059,6 +5033,58 @@ export class Session {
           cwd,
           success: false,
           branch,
+          error: toCheckoutError(error),
+          requestId,
+        },
+      });
+    }
+  }
+
+  private async handleCheckoutRenameBranchRequest(msg: CheckoutRenameBranchRequest): Promise<void> {
+    const { cwd, branch, requestId } = msg;
+    const validation = validateBranchSlug(branch);
+
+    if (!validation.valid) {
+      this.emit({
+        type: "checkout.rename_branch.response",
+        payload: {
+          cwd,
+          success: false,
+          currentBranch: null,
+          error: toCheckoutError(new Error(validation.error ?? "Invalid branch name")),
+          requestId,
+        },
+      });
+      return;
+    }
+
+    try {
+      const result = await renameCurrentBranch(cwd, branch);
+      await this.notifyGitMutation(cwd, "rename-branch", { invalidateGithub: true });
+      this.checkoutDiffManager.scheduleRefreshForCwd(cwd);
+      this.handleWorkspaceGitBranchSnapshot(cwd, result.currentBranch);
+
+      // Push a workspace_update immediately so the sidebar/header reflect
+      // the new branch name without waiting for the background git watcher.
+      await this.emitWorkspaceUpdateForCwd(cwd);
+
+      this.emit({
+        type: "checkout.rename_branch.response",
+        payload: {
+          cwd,
+          success: true,
+          currentBranch: result.currentBranch,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "checkout.rename_branch.response",
+        payload: {
+          cwd,
+          success: false,
+          currentBranch: null,
           error: toCheckoutError(error),
           requestId,
         },
@@ -5338,6 +5364,41 @@ export class Session {
     } catch (error) {
       this.emit({
         type: "checkout_push_response",
+        payload: {
+          cwd,
+          success: false,
+          error: toCheckoutError(error),
+          requestId,
+        },
+      });
+    }
+  }
+
+  private async handleCheckoutRefreshRequest(
+    msg: Extract<SessionInboundMessage, { type: "checkout.refresh.request" }>,
+  ): Promise<void> {
+    const { cwd, requestId } = msg;
+
+    try {
+      this.github.invalidate({ cwd });
+      await this.workspaceGitService.getSnapshot(cwd, {
+        force: true,
+        includeGitHub: true,
+        reason: "manual-refresh",
+      });
+      this.checkoutDiffManager.scheduleRefreshForCwd(cwd);
+      this.emit({
+        type: "checkout.refresh.response",
+        payload: {
+          cwd,
+          success: true,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "checkout.refresh.response",
         payload: {
           cwd,
           success: false,
@@ -5919,7 +5980,7 @@ export class Session {
     // (excluding internal agents which are for ephemeral system tasks)
     const registryRecords = await this.agentStorage.list();
     const liveIds = new Set(agentSnapshots.map((a) => a.id));
-    const registeredProviderIds = this.getRegisteredProviderIds();
+    const registeredProviderIds = this.providerSnapshotManager.listRegisteredProviderIds();
     const persistedAgents = registryRecords
       .filter((record) => !liveIds.has(record.id) && !record.internal)
       .filter(
@@ -6783,7 +6844,10 @@ export class Session {
 
   private async emitWorkspaceUpdateForCwd(
     cwd: string,
-    options?: { skipReconcile?: boolean; dedupeGitState?: boolean },
+    options?: {
+      skipReconcile?: boolean;
+      dedupeGitState?: boolean;
+    },
   ): Promise<void> {
     const workspaces = await this.workspaceRegistry.list();
     const workspaceId = this.resolveRegisteredWorkspaceIdForCwd(cwd, workspaces);
@@ -6871,6 +6935,143 @@ export class Session {
           code,
         },
       });
+    }
+  }
+
+  private async handleFetchRecentProviderSessions(
+    request: Extract<SessionInboundMessage, { type: "fetch_recent_provider_sessions_request" }>,
+  ): Promise<void> {
+    try {
+      const result = await listImportableProviderSessions({
+        request,
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        providerSnapshotManager: this.providerSnapshotManager,
+      });
+      this.emit({
+        type: "fetch_recent_provider_sessions_response",
+        payload: {
+          requestId: request.requestId,
+          entries: result.entries,
+          ...(result.filteredAlreadyImportedCount > 0
+            ? { filteredAlreadyImportedCount: result.filteredAlreadyImportedCount }
+            : {}),
+        },
+      });
+    } catch (error) {
+      const code =
+        error instanceof ImportSessionsRequestError
+          ? error.code
+          : "fetch_recent_provider_sessions_failed";
+      const message =
+        error instanceof Error ? error.message : "Failed to fetch recent provider sessions";
+      this.sessionLogger.error(
+        { err: error },
+        "Failed to handle fetch_recent_provider_sessions_request",
+      );
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: request.requestId,
+          requestType: request.type,
+          error: message,
+          code,
+        },
+      });
+    }
+  }
+
+  private async handleFetchWorkspacesRequest(
+    request: Extract<SessionInboundMessage, { type: "fetch_workspaces_request" }>,
+  ): Promise<void> {
+    const requestedSubscriptionId = request.subscribe?.subscriptionId?.trim();
+    const subscriptionId = resolveSubscriptionId(request.subscribe, requestedSubscriptionId);
+
+    try {
+      this.sessionLogger.debug(
+        {
+          requestId: request.requestId,
+          subscribeRequested: Boolean(request.subscribe),
+          filter: request.filter ?? null,
+          sort: request.sort ?? null,
+          page: request.page ?? null,
+        },
+        "fetch_workspaces_request_received",
+      );
+      if (subscriptionId) {
+        this.workspaceUpdatesSubscription = {
+          subscriptionId,
+          filter: request.filter,
+          isBootstrapping: true,
+          pendingUpdatesByWorkspaceId: new Map(),
+          lastEmittedByWorkspaceId: new Map(),
+        };
+      }
+
+      const payload = await this.listFetchWorkspacesEntries(request);
+      this.syncWorkspaceGitObservers(payload.entries);
+      this.sessionLogger.debug(
+        {
+          requestId: request.requestId,
+          subscriptionId,
+          pageInfo: payload.pageInfo,
+          payload: summarizeFetchWorkspacesEntries(payload.entries),
+        },
+        "fetch_workspaces_response_ready",
+      );
+      const snapshotLatestActivityByWorkspaceId = new Map<string, number>();
+      for (const entry of payload.entries) {
+        const parsedLatestActivity = entry.activityAt
+          ? Date.parse(entry.activityAt)
+          : Number.NEGATIVE_INFINITY;
+        if (!Number.isNaN(parsedLatestActivity)) {
+          snapshotLatestActivityByWorkspaceId.set(entry.id, parsedLatestActivity);
+        }
+      }
+
+      this.emit({
+        type: "fetch_workspaces_response",
+        payload: {
+          requestId: request.requestId,
+          ...(subscriptionId ? { subscriptionId } : {}),
+          ...payload,
+        },
+      });
+
+      if (subscriptionId && this.workspaceUpdatesSubscription?.subscriptionId === subscriptionId) {
+        this.flushBootstrappedWorkspaceUpdates({ snapshotLatestActivityByWorkspaceId });
+        void this.reconcileAndEmitWorkspaceUpdates();
+      }
+    } catch (error) {
+      if (subscriptionId && this.workspaceUpdatesSubscription?.subscriptionId === subscriptionId) {
+        this.workspaceUpdatesSubscription = null;
+      }
+      const code = error instanceof SessionRequestError ? error.code : "fetch_workspaces_failed";
+      const message = error instanceof Error ? error.message : "Failed to fetch workspaces";
+      this.sessionLogger.error({ err: error }, "Failed to handle fetch_workspaces_request");
+      this.emit({
+        type: "rpc_error",
+        payload: {
+          requestId: request.requestId,
+          requestType: request.type,
+          error: message,
+          code,
+        },
+      });
+    }
+  }
+
+  private async registerWorkspaceForImportedAgent(cwd: string): Promise<void> {
+    try {
+      const workspace = await this.findOrCreateWorkspaceForDirectory(cwd);
+      await this.syncWorkspaceGitObserverForWorkspace(workspace);
+      await this.describeWorkspaceRecord(workspace);
+      await this.emitWorkspaceUpdateForCwd(workspace.cwd);
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, cwd },
+        "Failed to register workspace for imported agent",
+      );
     }
   }
 
@@ -7067,129 +7268,6 @@ export class Session {
         results: [],
         truncated: false,
         error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  private async handleFetchRecentProviderSessions(
-    request: Extract<SessionInboundMessage, { type: "fetch_recent_provider_sessions_request" }>,
-  ): Promise<void> {
-    try {
-      const result = await listImportableProviderSessions({
-        request,
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        providerRegistry: this.getProviderRegistry(),
-      });
-      this.emit({
-        type: "fetch_recent_provider_sessions_response",
-        payload: {
-          requestId: request.requestId,
-          entries: result.entries,
-          ...(result.filteredAlreadyImportedCount > 0
-            ? { filteredAlreadyImportedCount: result.filteredAlreadyImportedCount }
-            : {}),
-        },
-      });
-    } catch (error) {
-      const code =
-        error instanceof ImportSessionsRequestError
-          ? error.code
-          : "fetch_recent_provider_sessions_failed";
-      const message =
-        error instanceof Error ? error.message : "Failed to fetch recent provider sessions";
-      this.sessionLogger.error(
-        { err: error },
-        "Failed to handle fetch_recent_provider_sessions_request",
-      );
-      this.emit({
-        type: "rpc_error",
-        payload: {
-          requestId: request.requestId,
-          requestType: request.type,
-          error: message,
-          code,
-        },
-      });
-    }
-  }
-
-  private async handleFetchWorkspacesRequest(
-    request: Extract<SessionInboundMessage, { type: "fetch_workspaces_request" }>,
-  ): Promise<void> {
-    const requestedSubscriptionId = request.subscribe?.subscriptionId?.trim();
-    const subscriptionId = resolveSubscriptionId(request.subscribe, requestedSubscriptionId);
-
-    try {
-      this.sessionLogger.debug(
-        {
-          requestId: request.requestId,
-          subscribeRequested: Boolean(request.subscribe),
-          filter: request.filter ?? null,
-          sort: request.sort ?? null,
-          page: request.page ?? null,
-        },
-        "fetch_workspaces_request_received",
-      );
-      if (subscriptionId) {
-        this.workspaceUpdatesSubscription = {
-          subscriptionId,
-          filter: request.filter,
-          isBootstrapping: true,
-          pendingUpdatesByWorkspaceId: new Map(),
-          lastEmittedByWorkspaceId: new Map(),
-        };
-      }
-
-      const payload = await this.listFetchWorkspacesEntries(request);
-      this.syncWorkspaceGitObservers(payload.entries);
-      this.sessionLogger.debug(
-        {
-          requestId: request.requestId,
-          subscriptionId,
-          pageInfo: payload.pageInfo,
-          payload: summarizeFetchWorkspacesEntries(payload.entries),
-        },
-        "fetch_workspaces_response_ready",
-      );
-      const snapshotLatestActivityByWorkspaceId = new Map<string, number>();
-      for (const entry of payload.entries) {
-        const parsedLatestActivity = entry.activityAt
-          ? Date.parse(entry.activityAt)
-          : Number.NEGATIVE_INFINITY;
-        if (!Number.isNaN(parsedLatestActivity)) {
-          snapshotLatestActivityByWorkspaceId.set(entry.id, parsedLatestActivity);
-        }
-      }
-
-      this.emit({
-        type: "fetch_workspaces_response",
-        payload: {
-          requestId: request.requestId,
-          ...(subscriptionId ? { subscriptionId } : {}),
-          ...payload,
-        },
-      });
-
-      if (subscriptionId && this.workspaceUpdatesSubscription?.subscriptionId === subscriptionId) {
-        this.flushBootstrappedWorkspaceUpdates({ snapshotLatestActivityByWorkspaceId });
-        void this.reconcileAndEmitWorkspaceUpdates();
-      }
-    } catch (error) {
-      if (subscriptionId && this.workspaceUpdatesSubscription?.subscriptionId === subscriptionId) {
-        this.workspaceUpdatesSubscription = null;
-      }
-      const code = error instanceof SessionRequestError ? error.code : "fetch_workspaces_failed";
-      const message = error instanceof Error ? error.message : "Failed to fetch workspaces";
-      this.sessionLogger.error({ err: error }, "Failed to handle fetch_workspaces_request");
-      this.emit({
-        type: "rpc_error",
-        payload: {
-          requestId: request.requestId,
-          requestType: request.type,
-          error: message,
-          code,
-        },
       });
     }
   }
@@ -7783,7 +7861,6 @@ export class Session {
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
           agentId,
-          userMessageText: msg.text,
           prompt,
           messageId: msg.messageId,
           logger: this.sessionLogger,
@@ -7816,11 +7893,8 @@ export class Session {
         return;
       }
 
-      const startAbort = new AbortController();
-      const startTimeoutMs = 15_000;
-      const startTimeout = setTimeout(() => startAbort.abort("timeout"), startTimeoutMs);
       try {
-        await this.agentManager.waitForAgentRunStart(agentId, { signal: startAbort.signal });
+        await waitForAgentRunStartWithTimeout(this.agentManager, agentId);
       } catch (error) {
         this.emit({
           type: "send_agent_message_response",
@@ -7832,8 +7906,6 @@ export class Session {
           },
         });
         return;
-      } finally {
-        clearTimeout(startTimeout);
       }
 
       this.emit({
@@ -8830,7 +8902,6 @@ export class Session {
             agentId,
             prompt: formatSystemNotificationPrompt(text),
             unarchive: false,
-            recordUserMessage: false,
             logger: this.sessionLogger,
           });
         },

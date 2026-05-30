@@ -99,11 +99,7 @@ import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
-import {
-  buildProviderRegistry,
-  createClientsFromRegistry,
-  shutdownProviders,
-} from "./agent/provider-registry.js";
+import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
 import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
 import { FileBackedProjectRegistry, FileBackedWorkspaceRegistry } from "./workspace-registry.js";
@@ -111,9 +107,7 @@ import { FileBackedChatService } from "./chat/chat-service.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { LoopService } from "./loop-service.js";
 import { ScheduleService } from "./schedule/service.js";
-import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
-import { loadPersistedConfig, type PersistedConfig } from "./persisted-config.js";
-import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
+import { DaemonConfigStore } from "./daemon-config-store.js";
 import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { archivePersistedWorkspaceRecord } from "./workspace-archive-service.js";
 import { setupAutoArchiveOnMerge } from "./auto-archive-on-merge/index.js";
@@ -131,6 +125,7 @@ import type {
   AgentProviderRuntimeSettingsMap,
   ProviderOverride,
 } from "./agent/provider-launch-config.js";
+import type { PersistedConfig } from "./persisted-config.js";
 import {
   ScriptRouteStore,
   createScriptProxyMiddleware,
@@ -153,13 +148,24 @@ function formatHostForHttpUrl(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
+function resolveAgentMcpClientHost(host: string): string {
+  if (host === "0.0.0.0") {
+    return "127.0.0.1";
+  }
+  if (host === "::" || host === "[::]") {
+    return "::1";
+  }
+  return host;
+}
+
 function createAgentMcpBaseUrl(listenTarget: ListenTarget | null): string | null {
   if (!listenTarget || listenTarget.type !== "tcp") {
     return null;
   }
+  const host = resolveAgentMcpClientHost(listenTarget.host);
   return new URL(
     "/mcp/agents",
-    `http://${formatHostForHttpUrl(listenTarget.host)}:${listenTarget.port}`,
+    `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
 }
 
@@ -231,6 +237,7 @@ export interface PaseoDaemonConfig {
   mcpEnabled?: boolean;
   mcpInjectIntoAgents?: boolean;
   autoArchiveAfterMerge?: boolean;
+  appendSystemPrompt?: string;
   staticDir: string;
   mcpDebug: boolean;
   isDev?: boolean;
@@ -251,6 +258,13 @@ export interface PaseoDaemonConfig {
   dictationFinalTimeoutMs?: number;
   downloadTokenTtlMs?: number;
   agentProviderSettings?: AgentProviderRuntimeSettingsMap;
+  metadataGeneration?: {
+    providers?: Array<{
+      provider: string;
+      model?: string;
+      thinkingOptionId?: string;
+    }>;
+  };
   providerOverrides?: Record<string, ProviderOverride>;
   log?: PersistedConfig["log"];
   onLifecycleIntent?: (intent: DaemonLifecycleIntent) => void;
@@ -269,32 +283,6 @@ export interface PaseoDaemon {
   getListenTarget(): ListenTarget | null;
 }
 
-function buildInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDaemonConfig {
-  return {
-    mcp: { injectIntoAgents: config.mcpInjectIntoAgents ?? true },
-    providers: Object.fromEntries(
-      Object.entries(config.providerOverrides ?? {}).map(([providerId, override]) => [
-        providerId,
-        {
-          ...(override.enabled !== undefined ? { enabled: override.enabled } : {}),
-          ...(override.additionalModels ? { additionalModels: override.additionalModels } : {}),
-        },
-      ]),
-    ),
-    speech: {
-      providers: {
-        ...(config.speech?.providers.dictationStt.provider
-          ? { dictationStt: config.speech.providers.dictationStt.provider }
-          : {}),
-        ...(config.speech?.providers.voiceStt.provider
-          ? { voiceStt: config.speech.providers.voiceStt.provider }
-          : {}),
-      },
-    },
-    autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
-  };
-}
-
 export async function createPaseoDaemon(
   config: PaseoDaemonConfig,
   rootLogger: Logger,
@@ -305,7 +293,23 @@ export async function createPaseoDaemon(
   const daemonVersion = resolveDaemonVersion(import.meta.url);
   const daemonConfigStore = new DaemonConfigStore(
     config.paseoHome,
-    buildInitialMutableDaemonConfig(config),
+    {
+      mcp: { injectIntoAgents: config.mcpInjectIntoAgents ?? true },
+      providers: Object.fromEntries(
+        Object.entries(config.providerOverrides ?? {}).map(([providerId, override]) => [
+          providerId,
+          {
+            ...(override.enabled !== undefined ? { enabled: override.enabled } : {}),
+            ...(override.additionalModels ? { additionalModels: override.additionalModels } : {}),
+          },
+        ]),
+      ),
+      metadataGeneration: {
+        providers: config.metadataGeneration?.providers ?? [],
+      },
+      autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
+      appendSystemPrompt: config.appendSystemPrompt ?? "",
+    },
     logger,
   );
 
@@ -518,19 +522,21 @@ export async function createPaseoDaemon(
       github,
     },
   });
-  const providerRegistry = buildProviderRegistry(logger, {
+  const providerSnapshotLogger = logger.child({ module: "provider-snapshot-manager" });
+  const providerSnapshotManager = new ProviderSnapshotManager({
+    logger: providerSnapshotLogger,
     runtimeSettings: config.agentProviderSettings,
     providerOverrides: config.providerOverrides,
     workspaceGitService,
     isDev: config.isDev === true,
+    extraClients: config.agentClients,
   });
+  const initialAgentManagerState = providerSnapshotManager.getAgentManagerProviderState();
   const agentManager = new AgentManager({
-    clients: {
-      ...createClientsFromRegistry(providerRegistry, logger),
-      ...config.agentClients,
-    },
-    providerDefinitions: providerRegistry,
+    clients: initialAgentManagerState.clients,
+    providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
+    appendSystemPrompt: config.appendSystemPrompt,
     logger,
   });
 
@@ -591,6 +597,13 @@ export async function createPaseoDaemon(
     agentStorage,
   });
   await scheduleService.start();
+  agentManager.setAgentArchivedCallback(async (agentId) => {
+    try {
+      await scheduleService.deleteForAgent(agentId);
+    } catch (error) {
+      logger.warn({ err: error, agentId }, "Failed to delete schedules for archived agent");
+    }
+  });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
@@ -655,7 +668,6 @@ export async function createPaseoDaemon(
     markWorkspaceArchiving: markWorkspaceArchivingExternal,
     clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
-    emitSessionMessage: emitExternalSessionMessage,
   });
 
   const mcpEnabled = config.mcpEnabled ?? true;
@@ -671,14 +683,13 @@ export async function createPaseoDaemon(
         terminalManager,
         getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
         scheduleService,
-        providerRegistry,
+        providerSnapshotManager,
         github,
         workspaceGitService,
         archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
         emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
         markWorkspaceArchiving: markWorkspaceArchivingExternal,
         clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
-        emitSessionMessage: emitExternalSessionMessage,
         createPaseoWorktree: async (input, serviceOptions) => {
           return createPaseoWorktreeWorkflow(
             {
@@ -856,22 +867,6 @@ export async function createPaseoDaemon(
     openaiConfig: config.openai,
     speechConfig: config.speech,
   });
-  const unsubscribeSpeechConfigChange = daemonConfigStore.onChange(() => {
-    try {
-      const persisted = loadPersistedConfig(config.paseoHome, logger);
-      const nextSpeechConfig = resolveSpeechConfig({
-        paseoHome: config.paseoHome,
-        env: process.env,
-        persisted,
-      });
-      speechService.updateConfig({
-        openaiConfig: nextSpeechConfig.openai,
-        speechConfig: nextSpeechConfig.speech,
-      });
-    } catch (error) {
-      logger.error({ err: error }, "Failed to reload speech configuration");
-    }
-  });
   logger.info({ elapsed: elapsed() }, "Speech service created");
 
   logger.info({ elapsed: elapsed() }, "Bootstrap complete, ready to start listening");
@@ -892,6 +887,9 @@ export async function createPaseoDaemon(
           agentManager.setMcpBaseUrl(agentMcpBaseUrl);
           daemonConfigStore.onFieldChange("mcp.injectIntoAgents", (value) => {
             agentManager.setMcpBaseUrl(value ? mcpBaseUrl : null);
+          });
+          daemonConfigStore.onFieldChange("appendSystemPrompt", (value) => {
+            agentManager.setAppendSystemPrompt(typeof value === "string" ? value : "");
           });
           const relayEnabled = config.relayEnabled ?? true;
           const relayEndpoint = config.relayEndpoint ?? "relay.paseo.sh:443";
@@ -941,9 +939,6 @@ export async function createPaseoDaemon(
             {
               finalTimeoutMs: config.dictationFinalTimeoutMs,
             },
-            config.agentProviderSettings,
-            config.providerOverrides,
-            config.isDev === true,
             daemonVersion,
             (intent) => {
               try {
@@ -967,6 +962,7 @@ export async function createPaseoDaemon(
             workspaceGitService,
             github,
             config.pushNotificationSender,
+            providerSnapshotManager,
             {
               listen: formatListenTarget(boundListenTarget ?? listenTarget),
               relay: {
@@ -1035,13 +1031,9 @@ export async function createPaseoDaemon(
     await agentManager.flush().catch(() => undefined);
     detachAgentStoragePersistence();
     await agentStorage.flush().catch(() => undefined);
-    await shutdownProviders(logger, {
-      runtimeSettings: config.agentProviderSettings,
-      providerOverrides: config.providerOverrides,
-    });
+    await providerSnapshotManager.shutdown();
     terminalManager.killAll();
     speechService.stop();
-    unsubscribeSpeechConfigChange();
     await scheduleService.stop().catch(() => undefined);
     await relayTransport?.stop().catch(() => undefined);
     if (wsServer) {

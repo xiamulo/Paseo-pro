@@ -1,9 +1,6 @@
 import { expect, type Page } from "@playwright/test";
-import { requireServerId } from "./sidebar";
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+import { escapeRegex } from "./regex";
+import { getServerId } from "./server-id";
 
 const SECTION_LABELS = {
   general: "General",
@@ -113,13 +110,13 @@ export async function expectHostSettingsUrl(page: Page, serverId: string): Promi
 }
 
 export async function verifyLegacyHostSettingsRedirect(page: Page): Promise<void> {
-  const serverId = requireServerId();
+  const serverId = getServerId();
   await page.goto(`/h/${encodeURIComponent(serverId)}/settings`);
   await expectHostSettingsUrl(page, serverId);
 }
 
 export async function openCompactSettingsHost(page: Page): Promise<void> {
-  const serverId = requireServerId();
+  const serverId = getServerId();
   await openSettingsHost(page, serverId);
   await expectHostSettingsUrl(page, serverId);
 }
@@ -159,7 +156,7 @@ export async function expectDiagnosticsContent(page: Page): Promise<void> {
 }
 
 export async function expectAboutContent(page: Page): Promise<void> {
-  await expect(page.getByText("Version", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("App version", { exact: true }).first()).toBeVisible();
 }
 
 export async function expectGeneralContent(page: Page): Promise<void> {
@@ -168,7 +165,7 @@ export async function expectGeneralContent(page: Page): Promise<void> {
 
 export async function expectHostLabelDisplayed(page: Page): Promise<void> {
   await expect(page.getByTestId("host-page-label-edit-button")).toBeVisible();
-  await expect(page.getByTestId("host-page-label-input")).toHaveCount(0);
+  await expect(page.getByTestId("host-page-rename-modal-input")).toHaveCount(0);
 }
 
 export async function clickEditHostLabel(page: Page): Promise<void> {
@@ -176,9 +173,9 @@ export async function clickEditHostLabel(page: Page): Promise<void> {
 }
 
 export async function expectHostLabelEditMode(page: Page, expectedLabel: string): Promise<void> {
-  await expect(page.getByTestId("host-page-label-input")).toBeVisible();
-  await expect(page.getByTestId("host-page-label-input")).toHaveValue(expectedLabel);
-  await expect(page.getByTestId("host-page-label-save")).toBeVisible();
+  await expect(page.getByTestId("host-page-rename-modal-input")).toBeVisible();
+  await expect(page.getByTestId("host-page-rename-modal-input")).toHaveValue(expectedLabel);
+  await expect(page.getByTestId("host-page-rename-modal-submit")).toBeVisible();
 }
 
 export async function expectHostConnectionsCard(page: Page, port: string): Promise<void> {

@@ -213,6 +213,7 @@ export function Autocomplete({
     [ensureActiveItemVisible],
   );
 
+  const selectedOption = options[selectedIndex];
   const containerStyle = useMemo(() => [styles.container, { maxHeight }], [maxHeight]);
 
   if (isLoading) {
@@ -244,8 +245,6 @@ export function Autocomplete({
       </View>
     );
   }
-
-  const selectedOption = options[selectedIndex];
 
   return (
     <View style={styles.outerWrapper}>

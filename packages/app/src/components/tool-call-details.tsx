@@ -9,10 +9,14 @@ import {
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { StyleSheet } from "react-native-unistyles";
 import { Fonts } from "@/constants/theme";
-import type { ToolCallDetail } from "@server/server/agent/agent-sdk-types";
+import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
+import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";
 import { useWebScrollbarStyle } from "@/hooks/use-web-scrollbar-style";
+import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
+import { extensionFromPath, highlightToKeyedLines } from "@/utils/highlight-cache";
+import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
 import { isWeb } from "@/constants/platform";
@@ -79,7 +83,7 @@ function useDetailStyles(
   const codeVerticalScrollStyle = useMemo(
     () => [
       styles.codeVerticalScroll,
-      resolvedMaxHeight !== undefined && { maxHeight: resolvedMaxHeight },
+      resolvedMaxHeight !== undefined && inlineUnistylesStyle({ maxHeight: resolvedMaxHeight }),
       shouldFill && styles.fillHeight,
       webScrollbarStyle,
     ],
@@ -88,7 +92,7 @@ function useDetailStyles(
   const scrollAreaFillStyle = useMemo(
     () => [
       styles.scrollArea,
-      resolvedMaxHeight !== undefined && { maxHeight: resolvedMaxHeight },
+      resolvedMaxHeight !== undefined && inlineUnistylesStyle({ maxHeight: resolvedMaxHeight }),
       shouldFill && styles.fillHeight,
       webScrollbarStyle,
     ],
@@ -97,7 +101,7 @@ function useDetailStyles(
   const scrollAreaStyle = useMemo(
     () => [
       styles.scrollArea,
-      resolvedMaxHeight !== undefined && { maxHeight: resolvedMaxHeight },
+      resolvedMaxHeight !== undefined && inlineUnistylesStyle({ maxHeight: resolvedMaxHeight }),
       webScrollbarStyle,
     ],
     [resolvedMaxHeight, webScrollbarStyle],
@@ -142,10 +146,10 @@ function useDetailStyles(
 function useDiffLines(detail: ToolCallDetail | undefined): DiffLine[] | undefined {
   return useMemo(() => {
     if (!detail || detail.type !== "edit") return undefined;
-    if (detail.unifiedDiff) {
-      return parseUnifiedDiff(detail.unifiedDiff);
-    }
-    return buildLineDiff(detail.oldString ?? "", detail.newString ?? "");
+    const diffLines = detail.unifiedDiff
+      ? parseUnifiedDiff(detail.unifiedDiff)
+      : buildLineDiff(detail.oldString ?? "", detail.newString ?? "");
+    return highlightDiffLines(diffLines, detail.filePath);
   }, [detail]);
 }
 
@@ -430,9 +434,22 @@ interface ScrollableContentProps {
   content: string;
   ds: DetailStyles;
   wrapInSectionFill?: boolean;
+  // Drives syntax highlighting (extension only) and, with startLine, a gutter.
+  filePath?: string | null;
+  startLine?: number;
 }
 
-function ScrollableTextSection({ content, ds, wrapInSectionFill = true }: ScrollableContentProps) {
+function ScrollableTextSection({
+  content,
+  ds,
+  wrapInSectionFill = true,
+  filePath,
+  startLine,
+}: ScrollableContentProps) {
+  const keyedLines = useMemo(
+    () => (filePath ? highlightToKeyedLines(content, extensionFromPath(filePath)) : null),
+    [content, filePath],
+  );
   const body = (
     <ScrollView
       style={ds.scrollAreaFillStyle}
@@ -446,9 +463,13 @@ function ScrollableTextSection({ content, ds, wrapInSectionFill = true }: Scroll
         showsHorizontalScrollIndicator={true}
         style={ds.webScrollbarStyle}
       >
-        <Text selectable style={styles.scrollText}>
-          {content}
-        </Text>
+        {keyedLines ? (
+          <HighlightedLines lines={keyedLines} startLine={startLine} />
+        ) : (
+          <Text selectable style={styles.scrollText}>
+            {content}
+          </Text>
+        )}
       </ScrollView>
     </ScrollView>
   );
@@ -668,14 +689,27 @@ function buildDetailSections(
     return [
       <View key="write" style={ds.sectionFillStyle}>
         {detail.content ? (
-          <ScrollableTextSection content={detail.content} ds={ds} wrapInSectionFill={false} />
+          <ScrollableTextSection
+            content={detail.content}
+            ds={ds}
+            wrapInSectionFill={false}
+            filePath={detail.filePath}
+          />
         ) : null}
       </View>,
     ];
   }
   if (detail.type === "read") {
     if (!detail.content) return [];
-    return [<ScrollableTextSection key="read" content={detail.content} ds={ds} />];
+    return [
+      <ScrollableTextSection
+        key="read"
+        content={detail.content}
+        ds={ds}
+        filePath={detail.filePath}
+        startLine={detail.offset ?? 1}
+      />,
+    ];
   }
   if (detail.type === "search") {
     return buildSearchSections(detail, ds);
@@ -843,7 +877,7 @@ const styles = StyleSheet.create((theme) => {
     },
     scrollText: {
       fontFamily: Fonts.mono,
-      fontSize: theme.fontSize.xs,
+      fontSize: theme.fontSize.code,
       color: theme.colors.foreground,
       lineHeight: 18,
       ...(isWeb
@@ -858,7 +892,7 @@ const styles = StyleSheet.create((theme) => {
     },
     subAgentSessionText: {
       fontFamily: Fonts.mono,
-      fontSize: theme.fontSize.xs,
+      fontSize: theme.fontSize.code,
       color: theme.colors.foregroundMuted,
       lineHeight: 18,
       marginBottom: theme.spacing[2],
@@ -874,13 +908,13 @@ const styles = StyleSheet.create((theme) => {
     },
     subAgentActionTool: {
       fontFamily: Fonts.mono,
-      fontSize: theme.fontSize.xs,
+      fontSize: theme.fontSize.code,
       color: theme.colors.foregroundMuted,
       lineHeight: 18,
     },
     subAgentActionSummary: {
       fontFamily: Fonts.mono,
-      fontSize: theme.fontSize.xs,
+      fontSize: theme.fontSize.code,
       color: theme.colors.foreground,
       lineHeight: 18,
     },
