@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatDuration, formatMessageTimestamp } from "./time";
+import { formatDuration, formatMessageEndTime, formatMessageTimestamp } from "./time";
 
 describe("formatDuration", () => {
   it("renders sub-minute durations as whole seconds", () => {
@@ -52,5 +52,12 @@ describe("formatMessageTimestamp", () => {
     const formatted = formatMessageTimestamp(date, now);
     expect(formatted).toMatch(/Apr|April/);
     expect(formatted).toMatch(/2026/);
+  });
+});
+
+describe("formatMessageEndTime", () => {
+  it("includes hours, minutes, and seconds", () => {
+    const date = new Date(2026, 4, 14, 12, 23, 45);
+    expect(formatMessageEndTime(date)).toMatch(/12:23:45/);
   });
 });

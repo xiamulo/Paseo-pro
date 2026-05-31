@@ -62,6 +62,22 @@ function getTimeFormatter(): Intl.DateTimeFormat {
   return cachedTimeFormatter;
 }
 
+let cachedTimeWithSecondsFormatter: Intl.DateTimeFormat | null = null;
+function getTimeWithSecondsFormatter(): Intl.DateTimeFormat {
+  if (cachedTimeWithSecondsFormatter) return cachedTimeWithSecondsFormatter;
+  const resolved = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).resolvedOptions();
+  cachedTimeWithSecondsFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: resolved.hourCycle,
+  });
+  return cachedTimeWithSecondsFormatter;
+}
+
 /**
  * Format a chat-message timestamp for hover-revealed UI.
  * - Same day: "10:11 PM" or "22:11" depending on user preference
@@ -88,6 +104,10 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
     year: "numeric",
   });
   return `${dateLabel}, ${time}`;
+}
+
+export function formatMessageEndTime(date: Date): string {
+  return getTimeWithSecondsFormatter().format(date);
 }
 
 /**
